@@ -1,0 +1,20 @@
+// # Copy to .env and fill in. Never commit or share .env.
+
+// # Gmail account that sends outreach emails
+// GMAIL_ADDRESS="mahendrasooryavanshi@gmail.com"
+// # 16-char App Password from https://myaccount.google.com/apppasswords (NOT your normal password)
+// GMAIL_APP_PASSWORD="lfrsdfgjlcnqooqq"
+
+// # Claude API key for personalised emails (https://console.anthropic.com). Optional: templates are used without it.
+// ANTHROPIC_API_KEY=
+
+// # Job sources (fill at least one)
+// # JSearch on RapidAPI (Google Jobs aggregator: LinkedIn, Naukri, Indeed, etc.): https://rapidapi.com/letscrape-6bRBa3QguO5/api/jsearch
+// RAPIDAPI_KEY="2858fca863mshd878bcc46ab15a7p1f0ddcjsncd94394c44d9"
+// # Adzuna (free): https://developer.adzuna.com
+// ADZUNA_APP_ID=
+// ADZUNA_APP_KEY=
+// GEMINI_API_KEY="AQ.Ab8RN6IBNeUPLz25G4vf3nTesm5qQeC1_DnHUrC_WU8qBh5BHw"
+// LINKEDIN_CLIENT_ID="86kmwsm7yatt0m"
+// LINKEDIN_CLIENT_SECRET="WPL_AP1.iDA8FCyN65RAZ5Y6.bqXozQ=="
+// LINKDIN_ACCESS_TOKEN="AQWnpXUoOzyVrz7fTMyEkIBzv-4Zs5jKKxqewWoCZ-Bg1uEg54kh812h-IbvjE5pJnhgUL7KNiQzWNMDzRaBeseilPUNsGh90B52C53-IzA_h9i0pcQ_xv-TCAOd04R0Zp4NJJE3La24Wa75dJwUTz4Zkpo_ua4vo8iYkk55aEZ9cKLAv-mjmqJPFQ9gNxCsV6Pccbm2gUuIICTkJIoHGtX1BTDVA9wvTw2NqGhIJ6LY1Qb6s2Y35MwGWQRRzdKkTRJWE0SjdDZOP2Pcv18Wqh-YbMirV3SZMIUynTkU4cQXp8KFHioq0sn-6fLl1nPruAQiKF5jt34WbQwsuaNau1VsDEjsbg"
