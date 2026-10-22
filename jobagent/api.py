@@ -18,7 +18,7 @@ from .__main__ import cmd_find, cmd_recheck, cmd_send
 from .config import ROOT, load_config
 from .finder import has_job_source
 from .lock import Busy, agent_lock
-from . import hr, linkedin_account, linkedin_import, profile, settings
+from . import assistant, hr, linkedin_account, linkedin_import, profile, settings
 from .activity import external_run, friendly_error, get_progress, record, recent, set_progress
 from .sheet import Tracker
 
@@ -580,6 +580,35 @@ def linkedin_post(req: PostText):
         raise HTTPException(502, friendly_error(e))
     record("you", "You posted on LinkedIn", req.text.strip().splitlines()[0][:90])
     return {"post": entry, **linkedin_status()}
+
+
+# ---------- AI career assistant ----------
+
+class ChatRequest(BaseModel):
+    messages: list[dict]
+    job_id: int | None = None
+    mode: str = "chat"   # chat | mock
+
+
+@app.post("/api/assistant/chat")
+def assistant_chat(req: ChatRequest):
+    cfg = load_config()
+    job = None
+    if req.job_id:
+        rows = dict(Tracker(cfg["sheet_path"]).rows())
+        if req.job_id in rows:
+            job = {k: ("" if v is None else v) for k, v in rows[req.job_id].items()}
+    msgs = [{"role": m.get("role"), "content": str(m.get("content", ""))[:8000]} for m in req.messages
+            if m.get("role") in ("user", "assistant")]
+    if not msgs or msgs[-1]["role"] != "user":
+        raise HTTPException(400, "Send a message to the assistant")
+    try:
+        return assistant.chat(cfg, msgs, job, "mock" if req.mode == "mock" else "chat")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        log.exception("Assistant failed")
+        raise HTTPException(502, friendly_error(e))
 
 
 @app.get("/api/activity")

@@ -13,6 +13,7 @@
         var dark = t.mode === "dark" || (t.mode === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
         document.documentElement.dataset.mode = dark ? "dark" : "light";
         document.documentElement.dataset.accent = t.accent || "lavender";
+        document.documentElement.dataset.density = t.density === "comfortable" ? "comfortable" : "compact";
       })();
     </script>
   </head>

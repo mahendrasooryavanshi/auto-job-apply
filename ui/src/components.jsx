@@ -24,6 +24,7 @@ const ICONS = {
   moon: "M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z",
   monitor: "M3 4h18a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1h-7v2h3v2H7v-2h3v-2H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zm1 2v9h16V6H4z",
   sliders: "M4 6h9v2H4V6zm13 0h3v2h-3v2h-2V4h2v2zM4 16h3v2H4v-2zm7 0h9v2h-9v2H9v-6h2v2zm-7-5h13v2H4v-2zm16 0v2h-1v-2h1z",
+  sparkle: "M12 2l1.9 5.6L19.5 9.5l-5.6 1.9L12 17l-1.9-5.6L4.5 9.5l5.6-1.9L12 2zm7 11 .9 2.6 2.6.9-2.6.9L19 20l-.9-2.6-2.6-.9 2.6-.9L19 13zM5 14l.7 2 2 .7-2 .7L5 19.4l-.7-2-2-.7 2-.7L5 14z",
   key: "M7 14a3 3 0 1 1 0-6 3 3 0 0 1 0 6zm5.6-4A6 6 0 1 0 12.6 14H15v3h3v-3h3v-4h-8.4z",
 };
 
@@ -172,6 +173,12 @@ export function ThemePicker({ theme, onChange, accents }) {
                 <button key={m} className={theme.mode === m ? "active" : ""} onClick={() => onChange({ ...theme, mode: m })}>
                   <Icon name={icon} size={14} /> {label}
                 </button>
+              ))}
+            </div>
+            <span className="mini-label top-gap">Layout</span>
+            <div className="seg-control full">
+              {[["compact", "Compact"], ["comfortable", "Comfortable"]].map(([d, label]) => (
+                <button key={d} className={(theme.density || "compact") === d ? "active" : ""} onClick={() => onChange({ ...theme, density: d })}>{label}</button>
               ))}
             </div>
             <span className="mini-label top-gap">Colour theme</span>

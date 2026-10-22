@@ -4,6 +4,7 @@ No LinkedIn account is used, so the user's account can't be restricted by this. 
 slow and few; if LinkedIn starts refusing (HTTP 429), the run stops asking for details.
 """
 import logging
+import re
 import time
 from datetime import date
 
@@ -49,6 +50,22 @@ def _cards(html: str) -> list[dict]:
     return out
 
 
+BLOCK_TAGS = ["p", "div", "ul", "ol", "li", "h1", "h2", "h3", "h4", "h5", "h6", "section", "tr"]
+
+
+def html_text(el) -> str:
+    """Readable text from HTML: line breaks only at paragraphs, <br> and list items; inline tags such as <strong>
+    stay on the same line, so "<strong>Company:</strong> NuSwipe" reads "Company: NuSwipe", not two lines."""
+    for br in el.find_all("br"):
+        br.replace_with("\n")
+    for li in el.find_all("li"):
+        li.insert(0, "• ")
+    for tag in el.find_all(BLOCK_TAGS):
+        tag.insert_after("\n")
+    lines = [re.sub(r"[ \t\u00a0]+", " ", line).strip() for line in el.get_text("").split("\n")]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
 def job_page(job_id: str) -> dict:
     """Title, company, location, description and notes from one public job page. Raises requests.HTTPError on refusal."""
     resp = _get(DETAIL_URL.format(job_id))
@@ -62,7 +79,7 @@ def job_page(job_id: str) -> dict:
         criteria.get("Seniority level"), criteria.get("Employment type"),
         applicants.get_text(strip=True) if applicants else "") if x)
     text = lambda sel: (soup.select_one(sel).get_text(strip=True) if soup.select_one(sel) else "")
-    return {"description": desc.get_text("\n", strip=True) if desc else "", "notes": notes,
+    return {"description": html_text(desc) if desc else "", "notes": notes,
             "title": text(".topcard__title"), "company": text("a.topcard__org-name-link") or text(".topcard__org-name"),
             "location": text(".topcard__flavor--bullet")}
 

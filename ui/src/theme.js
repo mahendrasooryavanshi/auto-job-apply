@@ -13,9 +13,10 @@ const media = window.matchMedia("(prefers-color-scheme: dark)");
 export function loadTheme() {
   try {
     const t = JSON.parse(localStorage.getItem(KEY)) || {};
-    return { mode: t.mode || "light", accent: ACCENTS[t.accent] ? t.accent : "lavender" };
+    return { mode: t.mode || "light", accent: ACCENTS[t.accent] ? t.accent : "lavender",
+             density: t.density === "comfortable" ? "comfortable" : "compact" };
   } catch {
-    return { mode: "light", accent: "lavender" };
+    return { mode: "light", accent: "lavender", density: "compact" };
   }
 }
 
@@ -23,6 +24,7 @@ export function applyTheme(theme) {
   const dark = theme.mode === "dark" || (theme.mode === "system" && media.matches);
   document.documentElement.dataset.mode = dark ? "dark" : "light";
   document.documentElement.dataset.accent = theme.accent;
+  document.documentElement.dataset.density = theme.density || "compact";
   document.documentElement.style.colorScheme = dark ? "dark" : "light";
 }
 

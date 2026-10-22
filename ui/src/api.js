@@ -48,6 +48,8 @@ export const api = {
     method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file,
   }),
   linkedinDisconnect: () => request("/linkedin/disconnect", { method: "POST" }),
+  assistant: (messages, jobId, mode) =>
+    request("/assistant/chat", { method: "POST", body: JSON.stringify({ messages, job_id: jobId, mode }) }),
   testGmail: () => request("/settings/test-gmail", { method: "POST" }),
   uploadResume: (file) =>
     request(`/settings/resume?filename=${encodeURIComponent(file.name)}`, {

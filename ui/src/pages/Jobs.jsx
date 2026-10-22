@@ -7,7 +7,27 @@ const LABELS = { Drafted: "To review", "No Contact": "Apply via link" };
 const PAGE_SIZES = [25, 50, 100];
 
 const DEFAULT_FILTERS = { sort: "newest", source: "all", minMatch: 0, maxAge: 0, hasEmail: false };
-const SOURCES = [["all", "All sources"], ["company", "Company sites"], ["linkedin", "LinkedIn"], ["boards", "Job boards"]];
+const SOURCES = [["all", "All"], ["company", "Company sites"], ["linkedin", "LinkedIn"], ["boards", "Job boards"]];
+const SORT_LABELS = { newest: "Newest added", match: "Best match", posted: "Latest posted" };
+
+function FilterGroup({ label, value, options, onChange }) {
+  return (
+    <div className="filter-group">
+      <span className="mini-label">{label}</span>
+      <div className="option-pills">
+        {options.map(([v, text]) => (
+          <button key={v} className={value === v ? "active" : ""} onClick={() => onChange(v)}>{text}</button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function FilterChip({ label, onClear }) {
+  return (
+    <span className="filter-chip">{label}<button onClick={onClear} aria-label={`Remove ${label}`}>×</button></span>
+  );
+}
 
 function loadFilters() {
   try { return { ...DEFAULT_FILTERS, ...JSON.parse(localStorage.getItem("jobs.filters")) }; } catch { return DEFAULT_FILTERS; }
@@ -27,6 +47,7 @@ export default function Jobs({ jobs, counts, filter, setFilter, openId, onOpen, 
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState(new Set());
   const [filters, setFiltersState] = useState(loadFilters);
+  const [panel, setPanel] = useState(null);   // open dropdown: "filters" | "sort" | null
   const cursor = cursors[cursors.length - 1];
   const setFilters = (f) => {
     setFiltersState(f);
@@ -89,63 +110,93 @@ export default function Jobs({ jobs, counts, filter, setFilter, openId, onOpen, 
 
   return (
     <div className="page">
-      <div className="chips">
-        {["All", ...STATUSES].map((s) => (
-          <button key={s} className={`chip ${filter === s ? "active" : ""}`} onClick={() => setFilter(s)}>
-            {LABELS[s] || s}
-            <span>{s === "All" ? jobs.length : counts[s] || 0}</span>
-          </button>
-        ))}
-      </div>
+      <section className="card jobs-card">
+        <nav className="status-tabs" aria-label="Job status">
+          {["All", ...STATUSES].map((s) => (
+            <button key={s} className={filter === s ? "active" : ""} onClick={() => setFilter(s)} aria-current={filter === s}>
+              {LABELS[s] || s}
+              <span>{s === "All" ? jobs.length : counts[s] || 0}</span>
+            </button>
+          ))}
+        </nav>
 
-      <section className="card">
-        <div className="toolbar">
-          <input className="search" placeholder="Search company, role, location, skill or email…" value={query}
-            onChange={(e) => setQuery(e.target.value)} />
-          {selected.size > 0 && (
-            <div className="bulk">
-              <span>{selected.size} selected</span>
-              <button className="btn btn-primary btn-sm" onClick={() => bulk("Approved")}>Approve</button>
-              <button className="btn btn-sm" onClick={() => bulk("Skipped")}>Skip</button>
-              <button className="btn btn-sm" onClick={() => bulk("Drafted")}>Back to draft</button>
-            </div>
-          )}
-        </div>
-
-        <div className="filter-bar">
-          <div className="seg-control">
-            {SOURCES.map(([v, label]) => (
-              <button key={v} className={filters.source === v ? "active" : ""} onClick={() => setFilters({ ...filters, source: v })}>{label}</button>
-            ))}
-          </div>
-          <select value={filters.minMatch} onChange={(e) => setFilters({ ...filters, minMatch: Number(e.target.value) })} aria-label="Match">
-            <option value={0}>Any match</option>
-            <option value={60}>60%+ match</option>
-            <option value={85}>85%+ match</option>
-            <option value={100}>100% match</option>
-          </select>
-          <select value={filters.maxAge} onChange={(e) => setFilters({ ...filters, maxAge: Number(e.target.value) })} aria-label="Posted">
-            <option value={0}>Posted any time</option>
-            <option value={1}>Last 24 hours</option>
-            <option value={3}>Last 3 days</option>
-            <option value={7}>Last 7 days</option>
-            <option value={30}>Last 30 days</option>
-          </select>
-          <button className={`chip ${filters.hasEmail ? "active" : ""}`} onClick={() => setFilters({ ...filters, hasEmail: !filters.hasEmail })}>
-            <Icon name="mail" size={13} /> Has recruiter email
-          </button>
-          <label className="sort-by">
-            Sort
-            <select value={filters.sort} onChange={(e) => setFilters({ ...filters, sort: e.target.value })}>
-              <option value="newest">Newest added</option>
-              <option value="match">Best match</option>
-              <option value="posted">Latest posted</option>
-            </select>
+        <div className="jobs-toolbar">
+          <label className="search-box">
+            <Icon name="search" size={16} />
+            <input placeholder="Search jobs, companies, skills…" value={query} onChange={(e) => setQuery(e.target.value)} />
+            {query && <button className="clear-x" onClick={() => setQuery("")} aria-label="Clear search">×</button>}
           </label>
-          {activeFilters > 0 && (
-            <button className="link-btn" onClick={() => setFilters({ ...DEFAULT_FILTERS, sort: filters.sort })}>Clear {activeFilters} filter{activeFilters > 1 ? "s" : ""}</button>
-          )}
+          <div className="toolbar-right">
+            <div className="dropdown">
+              <button className={`btn tool-btn ${activeFilters ? "has-active" : ""}`} onClick={() => setPanel(panel === "filters" ? null : "filters")}
+                aria-expanded={panel === "filters"}>
+                <Icon name="sliders" size={15} /> Filters{activeFilters > 0 && <span className="count-badge">{activeFilters}</span>}
+              </button>
+              {panel === "filters" && (
+                <>
+                  <div className="popover-backdrop" onClick={() => setPanel(null)} />
+                  <div className="popover filters-pop" role="dialog" aria-label="Filters">
+                    <FilterGroup label="Source" value={filters.source} onChange={(v) => setFilters({ ...filters, source: v })}
+                      options={SOURCES} />
+                    <FilterGroup label="Match with your skills" value={filters.minMatch} onChange={(v) => setFilters({ ...filters, minMatch: v })}
+                      options={[[0, "Any"], [60, "60%+"], [85, "85%+"], [100, "100%"]]} />
+                    <FilterGroup label="Posted" value={filters.maxAge} onChange={(v) => setFilters({ ...filters, maxAge: v })}
+                      options={[[0, "Any time"], [1, "24 hours"], [3, "3 days"], [7, "7 days"], [30, "30 days"]]} />
+                    <label className="toggle-row compact-toggle">
+                      <span><span className="toggle-label">Has recruiter email</span><span className="hint">Jobs you can email directly</span></span>
+                      <button type="button" role="switch" aria-checked={filters.hasEmail} className={`toggle ${filters.hasEmail ? "on" : ""}`}
+                        onClick={() => setFilters({ ...filters, hasEmail: !filters.hasEmail })}><span /></button>
+                    </label>
+                    <div className="pop-foot">
+                      <button className="link-btn" disabled={!activeFilters} onClick={() => setFilters({ ...DEFAULT_FILTERS, sort: filters.sort })}>Clear all</button>
+                      <button className="btn btn-primary btn-sm" onClick={() => setPanel(null)}>Show {page?.total ?? ""} jobs</button>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+            <div className="dropdown">
+              <button className="btn tool-btn" onClick={() => setPanel(panel === "sort" ? null : "sort")} aria-expanded={panel === "sort"}>
+                <span className="muted">Sort:</span> {SORT_LABELS[filters.sort]} <span className="caret">▾</span>
+              </button>
+              {panel === "sort" && (
+                <>
+                  <div className="popover-backdrop" onClick={() => setPanel(null)} />
+                  <div className="popover menu-pop" role="menu">
+                    {Object.entries(SORT_LABELS).map(([v, label]) => (
+                      <button key={v} role="menuitemradio" aria-checked={filters.sort === v} className={filters.sort === v ? "active" : ""}
+                        onClick={() => { setFilters({ ...filters, sort: v }); setPanel(null); }}>
+                        {label}{filters.sort === v && <Icon name="check" size={14} />}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
         </div>
+
+        {(activeFilters > 0 || selected.size > 0) && (
+          <div className="active-bar">
+            {selected.size > 0 ? (
+              <div className="bulk">
+                <span>{selected.size} selected</span>
+                <button className="btn btn-primary btn-sm" onClick={() => bulk("Approved")}>Approve</button>
+                <button className="btn btn-sm" onClick={() => bulk("Applied")}>Mark applied</button>
+                <button className="btn btn-sm" onClick={() => bulk("Skipped")}>Not interested</button>
+                <button className="link-btn" onClick={() => setSelected(new Set())}>Cancel</button>
+              </div>
+            ) : (
+              <>
+                {filters.source !== "all" && <FilterChip label={SOURCES.find(([v]) => v === filters.source)[1]} onClear={() => setFilters({ ...filters, source: "all" })} />}
+                {filters.minMatch > 0 && <FilterChip label={`${filters.minMatch}%+ match`} onClear={() => setFilters({ ...filters, minMatch: 0 })} />}
+                {filters.maxAge > 0 && <FilterChip label={`Posted ≤ ${filters.maxAge === 1 ? "24 hours" : `${filters.maxAge} days`}`} onClear={() => setFilters({ ...filters, maxAge: 0 })} />}
+                {filters.hasEmail && <FilterChip label="Has recruiter email" onClear={() => setFilters({ ...filters, hasEmail: false })} />}
+                <button className="link-btn" onClick={() => setFilters({ ...DEFAULT_FILTERS, sort: filters.sort })}>Clear all</button>
+              </>
+            )}
+          </div>
+        )}
 
         {page === null ? (
           <p className="empty">Loading…</p>
@@ -172,7 +223,7 @@ export default function Jobs({ jobs, counts, filter, setFilter, openId, onOpen, 
                   <span className="jr-main">
                     <CompanyAvatar name={j.Company} />
                     <span className="jr-title">
-                      <strong>{j.Role}</strong>
+                      <strong title={j.Role}>{j.Role}</strong>
                       <small>
                         <span className="jr-company">{j.Source === "LinkedIn post" ? (j.Notes || "LinkedIn post") : j.Company}</span>
                         <SourceTag source={j.Source} />

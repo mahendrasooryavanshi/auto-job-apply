@@ -10,10 +10,12 @@ import Activity from "./pages/Activity.jsx";
 import Profile from "./pages/Profile.jsx";
 import HrOutreach from "./pages/HrOutreach.jsx";
 import LinkedIn from "./pages/LinkedIn.jsx";
+import Assistant from "./pages/Assistant.jsx";
 
 const PAGES = [
   { id: "overview", label: "Overview", icon: "overview" },
   { id: "jobs", label: "Jobs", icon: "jobs" },
+  { id: "assistant", label: "AI assistant", icon: "sparkle" },
   { id: "hr", label: "HR outreach", icon: "mail" },
   { id: "linkedin", label: "LinkedIn", icon: "linkedin" },
   { id: "profile", label: "Profile boost", icon: "profile" },
@@ -35,6 +37,8 @@ export default function App() {
   const [toast, setToast] = useState(null);
   const [serverDown, setServerDown] = useState(false);
   const [theme, setTheme] = useState(loadTheme);
+  const [assistantJob, setAssistantJob] = useState("");
+  const askAboutJob = (id) => { setAssistantJob(String(id)); setOpenId(null); go("assistant"); };
   const [updateReady, setUpdateReady] = useState(false);
 
   // Open tabs keep running the old dashboard after an update: notice a new build and offer a reload
@@ -188,11 +192,12 @@ export default function App() {
         {page === "activity" && <Activity onOpen={setOpenId} />}
         {page === "profile" && <Profile notify={notify} setup={summary?.setup} />}
         {page === "linkedin" && <LinkedIn notify={notify} />}
+        {page === "assistant" && <Assistant jobs={jobs} notify={notify} initialJobId={assistantJob} />}
         {page === "hr" && <HrOutreach notify={notify} summary={summary} onRunSend={() => runAction("send")} refreshSummary={refresh} />}
       </main>
 
       {jobs.find((j) => j.id === openId) && (
-        <JobPanel job={jobs.find((j) => j.id === openId)} onClose={() => setOpenId(null)}
+        <JobPanel job={jobs.find((j) => j.id === openId)} onClose={() => setOpenId(null)} onAsk={askAboutJob}
           notify={notify} onSaved={refresh} busy={!!running} />
       )}
 

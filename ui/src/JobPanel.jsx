@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "./api.js";
 import { CompanyAvatar, Icon, MatchPill, SourceTag, StatusBadge, timeAgo } from "./components.jsx";
+import JobDescription from "./JobDescription.jsx";
 import { applicantsOf } from "./utils.js";
 
 const fieldsFrom = (job) => ({
@@ -22,7 +23,7 @@ function siteName(link) {
   }
 }
 
-export default function JobPanel({ job, onClose, onSaved, notify, busy }) {
+export default function JobPanel({ job, onClose, onSaved, notify, busy, onAsk }) {
   const [form, setForm] = useState(fieldsFrom(job));
   const [saving, setSaving] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -100,6 +101,9 @@ export default function JobPanel({ job, onClose, onSaved, notify, busy }) {
               <Icon name="check" size={15} /> I applied
             </button>
           )}
+          {onAsk && (
+            <button className="btn ask-ai" onClick={() => onAsk(job.id)}><Icon name="sparkle" size={15} /> Ask AI</button>
+          )}
           {!locked && (job.Status !== "Skipped"
             ? <button className="btn btn-ghost" disabled={saving || busy} onClick={() => save("Skipped")}>Not interested</button>
             : <button className="btn btn-ghost" disabled={saving || busy} onClick={() => save("Drafted")}>Restore</button>)}
@@ -122,7 +126,7 @@ export default function JobPanel({ job, onClose, onSaved, notify, busy }) {
           <h3>About the job</h3>
           {jd ? (
             <>
-              <div className={`jd ${expanded ? "" : "jd-clamped"}`}>{jd}</div>
+              <div className={`jd ${expanded ? "" : "jd-clamped"}`}><JobDescription text={jd} /></div>
               {jd.length > 700 && (
                 <button className="link-btn" onClick={() => setExpanded(!expanded)}>{expanded ? "Show less" : "Read full description"}</button>
               )}
