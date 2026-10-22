@@ -37,9 +37,11 @@ systemctl --user enable jobagent-ui.service jobagent-daily.timer >/dev/null
 systemctl --user restart jobagent-ui.service
 systemctl --user start jobagent-daily.timer
 
-sleep 3
-if curl -sf http://localhost:8765/api/version >/dev/null; then
-  echo "==> Done. Dashboard is running on the server (port 8765, private to the server)."
+# 401 = running in prod mode, behind its login. A micro server takes a few seconds to start it.
+up() { [[ "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8765/api/version)" =~ ^(200|401)$ ]]; }
+for _ in $(seq 20); do up && break; sleep 1; done
+if up; then
+  echo "==> Done. Dashboard is running on the server (port 8765)."
   systemctl --user list-timers jobagent-daily.timer --no-pager | sed -n '1,2p'
 else
   echo "Dashboard didn't start; see: journalctl --user -u jobagent-ui -n 50"

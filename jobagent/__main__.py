@@ -8,14 +8,14 @@
   python -m jobagent ui        start the dashboard at http://localhost:8765
 """
 import logging
-import os
+from logging.handlers import RotatingFileHandler
 import sys
 import time
 from collections import Counter
 from datetime import datetime, timedelta
 
 from .activity import friendly_error, record, running, set_progress, wait_between
-from .config import ROOT, load_config
+from .config import ROOT, load_config, server_settings
 from .finder import find_jobs
 from .hr import HRSheet, send_hr
 from .inbox import check_inbox
@@ -288,7 +288,7 @@ def main() -> None:
     (ROOT / "logs").mkdir(exist_ok=True)
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
-        handlers=[logging.StreamHandler(), logging.FileHandler(ROOT / "logs" / "agent.log")],
+        handlers=[logging.StreamHandler(), RotatingFileHandler(ROOT / "logs" / "agent.log", maxBytes=5_000_000, backupCount=3)],
     )
     cmd = sys.argv[1] if len(sys.argv) > 1 else "run"
     cfg = load_config()
@@ -305,7 +305,12 @@ def main() -> None:
             raise
     elif cmd == "ui":
         import uvicorn
-        uvicorn.run("jobagent.api:app", host=os.environ.get("JOBAGENT_HOST", "127.0.0.1"), port=int(os.environ.get("JOBAGENT_PORT", "8765")))
+        srv = server_settings()
+        if srv["env"] == "prod" and len(srv["password"]) < 12:
+            # Anyone who reaches the dashboard can send email as you, so never serve it publicly without a login
+            raise SystemExit("JOBAGENT_ENV=prod needs JOBAGENT_PASSWORD (12+ characters) in .env")
+        log.info("Dashboard (%s) on %s:%d, open %s", srv["env"], srv["host"], srv["port"], srv["public_url"])
+        uvicorn.run("jobagent.api:app", host=srv["host"], port=srv["port"])
     else:
         print(__doc__)
 

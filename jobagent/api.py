@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .__main__ import cmd_find, cmd_recheck, cmd_send
-from .config import ROOT, load_config
+from .config import ROOT, load_config, server_settings
 from .finder import has_job_source
 from .lock import Busy, agent_lock
 from . import agent_tools, assistant, hr, linkedin_account, linkedin_import, profile, settings, voice
@@ -29,6 +29,8 @@ log = logging.getLogger("jobagent")
 app = FastAPI(title="Job Agent")
 
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "[::1]"}
+SERVER = server_settings()
+ALLOWED_HOSTS = LOCAL_HOSTS | SERVER["allowed_hosts"]
 CSRF_HEADER = "x-job-agent"   # sent by the dashboard on every change; other websites can't add it without a CORS grant
 
 
@@ -39,18 +41,35 @@ def _hostname(value: str) -> str:
     return value.split(":")[0]
 
 
+def _logged_in(request: Request) -> bool:
+    scheme, _, token = request.headers.get("authorization", "").partition(" ")
+    if scheme.lower() != "basic":
+        return False
+    try:
+        user, _, password = base64.b64decode(token).decode().partition(":")
+    except ValueError:
+        return False
+    ok_user = secrets.compare_digest(user.encode(), SERVER["user"].encode())
+    return secrets.compare_digest(password.encode(), SERVER["password"].encode()) and ok_user
+
+
 @app.middleware("http")
 async def local_dashboard_only(request: Request, call_next):
-    """Only this computer's dashboard may use the API.
+    """Only your own dashboard may use the API.
 
     - Host check: blocks DNS-rebinding (a website pointing its own name at 127.0.0.1 to read your data).
+      In prod the public host from JOBAGENT_PUBLIC_URL / JOBAGENT_ALLOWED_HOSTS is allowed too.
+    - Login (prod only): every request needs JOBAGENT_USER / JOBAGENT_PASSWORD, since anyone could reach it.
     - Origin check + custom header on every change: blocks other websites you visit from adding HR contacts,
       changing settings or pressing Send behind your back (cross-site request forgery).
     """
-    if _hostname(request.headers.get("host", "")) not in LOCAL_HOSTS:
+    if _hostname(request.headers.get("host", "")) not in ALLOWED_HOSTS:
         return JSONResponse({"detail": "Forbidden"}, status_code=403)
+    if SERVER["env"] == "prod" and not _logged_in(request):
+        return JSONResponse({"detail": "Login required"}, status_code=401,
+                            headers={"WWW-Authenticate": 'Basic realm="Job Agent", charset="UTF-8"'})
     origin = request.headers.get("origin")
-    if origin and origin != "null" and _hostname(origin.split("://")[-1]) not in LOCAL_HOSTS:
+    if origin and origin != "null" and _hostname(origin.split("://")[-1]) not in ALLOWED_HOSTS:
         return JSONResponse({"detail": "Forbidden"}, status_code=403)
     if request.method not in ("GET", "HEAD") and request.url.path.startswith("/api/") \
             and request.headers.get(CSRF_HEADER) != "1":

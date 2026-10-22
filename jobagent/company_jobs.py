@@ -9,13 +9,14 @@ import html
 import json
 import logging
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 import requests
 
 from .config import ROOT
-from .finder import _problem, _row
+from .finder import _row
 
 log = logging.getLogger(__name__)
 
@@ -47,9 +48,21 @@ def _text(html_str: str) -> str:
 
 
 def _get(url: str, **params):
-    resp = requests.get(url, params=params, timeout=TIMEOUT, headers={"User-Agent": "JobAgent/1.0"})
-    resp.raise_for_status()
-    return resp.json()
+    for attempt in range(2):   # boards often blip (502/503, dropped connection): one quick retry saves the company
+        try:
+            resp = requests.get(url, params=params, timeout=TIMEOUT, headers={"User-Agent": "JobAgent/1.0"})
+        except requests.Timeout:
+            raise   # a slow board is skipped, not waited on twice
+        except requests.ConnectionError:
+            if attempt:
+                raise
+            time.sleep(3)
+            continue
+        if attempt == 0 and (resp.status_code == 429 or resp.status_code >= 500):
+            time.sleep(3)
+            continue
+        resp.raise_for_status()
+        return resp.json()
 
 
 # ---- one fetcher per hiring system; each returns normalised jobs ----
@@ -291,6 +304,8 @@ def search_companies(cfg: dict) -> list[dict]:
     if unknown:
         log.info("No public careers feed found for: %s", ", ".join(unknown))
 
+    skipped = []
+
     def fetch(item):
         company, src = item
         label = company.split("=")[0].strip() if "=" in company else (
@@ -299,9 +314,9 @@ def search_companies(cfg: dict) -> list[dict]:
             if src["ats"] == "workday":
                 return label, src, _workday(src["slug"].split("=")[-1].strip(), label, s["roles"])
             return label, src, FETCHERS[src["ats"]](src["slug"], company)
-        except (requests.RequestException, ValueError, KeyError) as e:
-            log.warning("Careers feed failed for %s: %s", company, e)
-            _problem(f"{company} careers", "all roles", "their site", e)
+        except Exception as e:   # any trouble with one company's site: skip it, the rest still count
+            log.info("Skipped %s this time: %s", company, e)
+            skipped.append(label)
             return company, src, []
 
     jobs = []
@@ -321,13 +336,16 @@ def search_companies(cfg: dict) -> list[dict]:
                             p["description"] = "\n\n".join(_text(v.get("text", "")) for v in ad.values() if isinstance(v, dict))
                         else:
                             p["description"] = _text(d.get("description", "") or d.get("descriptionHtml", ""))
-                    except (requests.RequestException, ValueError):
+                    except Exception:   # keep the listing without its full text
                         pass
                 job = _row(p["url"], company, p["title"], p["location"], p["description"] or p["title"],
                            p["posted"], p["budget"] or "Not disclosed", f"{company} careers")
                 job["Notes"] = "⭐ Target company · apply on their careers page"
                 jobs.append(job)
     log.info("Target companies: %d openings in your locations from %d companies", len(jobs), sum(1 for v in sources.values() if v))
+    if skipped:
+        log.info("Skipped %d compan%s with site problems, tried again next run: %s",
+                 len(skipped), "y" if len(skipped) == 1 else "ies", ", ".join(sorted(skipped)))
     return jobs
 
 

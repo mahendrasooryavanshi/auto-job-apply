@@ -45,7 +45,7 @@ def _tbs(days: int) -> str:
 def _search_serper(key: str, query: str, days: int) -> list[dict]:
     resp = requests.post("https://google.serper.dev/search", timeout=30,
                          headers={"X-API-KEY": key, "Content-Type": "application/json"},
-                         json={"q": query, "num": 20, "gl": "in", "tbs": _tbs(days)})
+                         json={"q": query, "num": 10, "gl": "in", "tbs": _tbs(days)})   # free plan: max 10, more is a 400
     resp.raise_for_status()
     return resp.json().get("organic", [])
 

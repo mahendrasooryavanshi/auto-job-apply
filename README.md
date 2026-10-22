@@ -139,15 +139,27 @@ For live-reload while editing the React code: keep the backend running and use `
 ## Deploy to AWS (EC2 free tier)
 
 1. **Launch** EC2 → Ubuntu 24.04 → `t3.micro`/`t2.micro` ("Free tier eligible") → 20 GB disk → new key pair (`.pem`) →
-   security group: **SSH (22) from My IP only**. Do not open port 8765.
+   security group: **SSH (22) from My IP only** (open 8765 only for prod mode, step 3).
 2. **First upload** (from this folder on your laptop; copies code + keys + settings + resume + data, then sets everything up):
    ```bash
    bash deploy/push_to_server.sh ~/Downloads/job-agent.pem ubuntu@<server-ip> --with-data
    ```
-3. **Open the dashboard** through a private SSH tunnel (keep it running), then visit http://localhost:8765:
-   ```bash
-   ssh -i ~/Downloads/job-agent.pem -N -L 8765:localhost:8765 ubuntu@<server-ip>
-   ```
+3. **Open the dashboard.** Pick one:
+   - **Public URL (prod mode, behind a login).** On the server, add to `~/auto-apply-agent/.env`:
+     ```
+     JOBAGENT_ENV=prod
+     JOBAGENT_PUBLIC_URL=http://<server-ip>:8765
+     JOBAGENT_USER=admin
+     JOBAGENT_PASSWORD=<12+ random characters: openssl rand -base64 18>
+     ```
+     then `systemctl --user restart jobagent-ui`, and in the EC2 security group allow **TCP 8765 from My IP**.
+     Open `http://<server-ip>:8765` and log in. Plain HTTP sends the password unencrypted, so keep the port
+     limited to your own IP (or put HTTPS in front with a domain). If you use LinkedIn connect, add
+     `<JOBAGENT_PUBLIC_URL>/api/linkedin/callback` to your LinkedIn app's redirect URLs.
+   - **Private SSH tunnel (dev mode, the default; nothing opened to the internet).** Keep it running, then visit http://localhost:8765:
+     ```bash
+     ssh -i ~/Downloads/job-agent.pem -N -L 8765:localhost:8765 ubuntu@<server-ip>
+     ```
    Stop the laptop's own copy first, or both send emails: `systemctl --user disable --now jobagent-ui.service jobagent-daily.timer`
 4. **Later code updates** (never overwrites the server's data, keys or settings):
    ```bash

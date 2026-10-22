@@ -17,11 +17,11 @@ from urllib.parse import urlencode
 
 import requests
 
-from .config import ROOT
+from .config import ROOT, server_settings
 
 TOKEN_PATH = ROOT / "data" / "linkedin_token.json"
 HISTORY_PATH = ROOT / "data" / "linkedin_posts.jsonl"
-REDIRECT_URI = "http://localhost:8765/api/linkedin/callback"
+REDIRECT_URI = f"{server_settings()['public_url']}/api/linkedin/callback"   # add this exact URL in your LinkedIn app
 SCOPES = "openid profile email w_member_social"
 AUTH_URL = "https://www.linkedin.com/oauth/v2/authorization"
 TOKEN_URL = "https://www.linkedin.com/oauth/v2/accessToken"
