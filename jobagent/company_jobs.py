@@ -71,7 +71,8 @@ def _lever(slug: str, name: str) -> list[dict]:
                     "url": j["hostedUrl"],
                     "posted": datetime.fromtimestamp(j.get("createdAt", 0) / 1000, timezone.utc).isoformat(),
                     "description": "\n\n".join(filter(None, [j.get("descriptionPlain", ""), lists, j.get("additionalPlain", "")])),
-                    "budget": f"{pay.get('currency', '')} {pay.get('min', ''):,} - {pay.get('max', ''):,}".strip()
+                    "budget": " ".join(filter(None, [pay.get("currency", ""), " - ".join(
+                        f"{v:,}" if isinstance(v, (int, float)) else str(v) for v in (pay.get("min"), pay.get("max")) if v)]))
                     if pay.get("min") else ""})
     return out
 
@@ -151,7 +152,7 @@ def _breezy(slug: str, name: str) -> list[dict]:
 def _rippling(slug: str, name: str) -> list[dict]:
     out = []
     data = _get(f"https://ats.rippling.com/api/v2/board/{slug}/jobs", page=0)
-    for j in (data.get("items") or data.get("results") or data if isinstance(data, list) else []):
+    for j in (data if isinstance(data, list) else (data.get("items") or data.get("results") or []) if isinstance(data, dict) else []):
         locs = j.get("locations") or []
         out.append({"title": j.get("name", ""), "location": " / ".join(l.get("name", "") if isinstance(l, dict) else str(l) for l in locs),
                     "url": j.get("url", ""), "posted": "", "description": "", "budget": "",
@@ -223,22 +224,26 @@ def _has_postings(ats: str, r: requests.Response) -> bool:
     return isinstance(data, dict) and ("jobs" in data or "name" in data)
 
 
-def _detect(company: str) -> dict | None:
+def _detect(company: str) -> dict | None | bool:
+    """Which hiring system a company uses, by trying the usual board names on each.
+    None = definitely not found; False = some probes failed (network/server error), so try again next time."""
     link = company.split("=")[-1].strip()
     if WD_URL.match(link):
         return {"ats": "workday", "slug": link}
-    """Which hiring system a company uses, by trying the usual board names on each."""
     base = re.sub(r"[^A-Za-z0-9]", "", company)
+    unsure = False
     for ats, probe in PROBES.items():
         for slug in dict.fromkeys([base.lower(), base, company.strip().replace(" ", "-").lower()]):
             try:
                 r = requests.get(probe(slug), timeout=TIMEOUT)
             except requests.RequestException:
+                unsure = True
                 continue
-            ok = r.ok and _has_postings(ats, r)
-            if ok:
+            if r.status_code == 429 or r.status_code >= 500:
+                unsure = True
+            elif r.ok and _has_postings(ats, r):
                 return {"ats": ats, "slug": slug}
-    return None
+    return False if unsure else None
 
 
 def _sources(companies: list[str]) -> dict[str, dict | None]:
@@ -250,7 +255,8 @@ def _sources(companies: list[str]) -> dict[str, dict | None]:
     if missing:
         with ThreadPoolExecutor(8) as ex:
             for company, found in zip(missing, ex.map(_detect, missing)):
-                cache[company] = found
+                if found is not False:   # don't remember "not found" when it was only a network error
+                    cache[company] = found
         SOURCES_PATH.write_text(json.dumps(cache, indent=1))
     return {c: cache.get(c) for c in companies}
 
