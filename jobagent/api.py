@@ -1,0 +1,573 @@
+"""HTTP API behind the React dashboard. Start with: python -m jobagent ui"""
+import logging
+import threading
+from collections import Counter
+from datetime import datetime
+from pathlib import Path
+from urllib.parse import quote
+
+import requests
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
+from .__main__ import cmd_find, cmd_recheck, cmd_send
+from .config import ROOT, load_config
+from .finder import has_job_source
+from .lock import Busy, agent_lock
+from . import hr, linkedin_account, profile, settings
+from .activity import external_run, friendly_error, get_progress, record, recent, set_progress
+from .sheet import Tracker
+
+log = logging.getLogger("jobagent")
+app = FastAPI(title="Job Agent")
+
+LOCAL_HOSTS = {"localhost", "127.0.0.1", "[::1]"}
+CSRF_HEADER = "x-job-agent"   # sent by the dashboard on every change; other websites can't add it without a CORS grant
+
+
+def _hostname(value: str) -> str:
+    value = value.strip().lower()
+    if value.startswith("["):
+        return value.split("]")[0] + "]"
+    return value.split(":")[0]
+
+
+@app.middleware("http")
+async def local_dashboard_only(request: Request, call_next):
+    """Only this computer's dashboard may use the API.
+
+    - Host check: blocks DNS-rebinding (a website pointing its own name at 127.0.0.1 to read your data).
+    - Origin check + custom header on every change: blocks other websites you visit from adding HR contacts,
+      changing settings or pressing Send behind your back (cross-site request forgery).
+    """
+    if _hostname(request.headers.get("host", "")) not in LOCAL_HOSTS:
+        return JSONResponse({"detail": "Forbidden"}, status_code=403)
+    origin = request.headers.get("origin")
+    if origin and origin != "null" and _hostname(origin.split("://")[-1]) not in LOCAL_HOSTS:
+        return JSONResponse({"detail": "Forbidden"}, status_code=403)
+    if request.method not in ("GET", "HEAD") and request.url.path.startswith("/api/") \
+            and request.headers.get(CSRF_HEADER) != "1":
+        return JSONResponse({"detail": "Forbidden"}, status_code=403)
+    response = await call_next(request)
+    if not request.url.path.startswith(("/api/", "/assets/")):
+        response.headers["Cache-Control"] = "no-cache"   # always load the newest dashboard after an update
+    return response
+
+# Statuses a person may set from the UI; Emailed/Failed/No Contact are set by the agent.
+USER_STATUSES = {"Drafted", "Approved", "Skipped"}
+EDITABLE = {"subject": "Email Subject", "body": "Email Body", "notes": "Notes", "recruiter_email": "Recruiter Email"}
+
+_action = {"name": None, "started": None, "finished": None, "error": None, "result": None}
+_action_lock = threading.Lock()
+
+
+def _tracker() -> Tracker:
+    return Tracker(load_config()["sheet_path"])
+
+
+def _current_action() -> dict:
+    if _action["name"]:
+        return {**_action, "progress": get_progress()}
+    ext = external_run()
+    if ext:   # e.g. the 9:30 daily run, started by the scheduler rather than the dashboard
+        return {**_action, "name": ext["name"], "started": ext["started"], "external": True, "progress": get_progress()}
+    return {**_action, "progress": ""}
+
+
+@app.get("/api/summary")
+def summary():
+    cfg = load_config()
+    tracker, hr_sheet = Tracker(cfg["sheet_path"]), hr.HRSheet()
+    env = cfg["env"]
+    return {
+        "counts": Counter(r["Status"] for _, r in tracker.rows()),
+        "sent_today": tracker.sent_today() + hr_sheet.sent_today(),
+        "hr_ready": sum(1 for _ in hr_sheet.rows("Ready")),
+        "daily_limit": cfg["email"]["daily_limit"],
+        "auto_send": cfg["email"]["auto_send"],
+        "action": _current_action(),
+        "setup": {
+            "Gmail address": bool(env["GMAIL_ADDRESS"]),
+            "Gmail App Password": bool(env["GMAIL_APP_PASSWORD"]),
+            "AI key (Claude or Gemini)": bool(env["ANTHROPIC_API_KEY"] or env["GEMINI_API_KEY"]),
+            "Job source key": has_job_source(env, cfg["search"]),
+            "Resume file": Path(cfg["candidate"]["resume_path"]).exists(),
+        },
+    }
+
+
+@app.get("/api/jobs")
+def jobs():
+    return [{"id": row_num, **{k: ("" if v is None else v) for k, v in row.items()}}
+            for row_num, row in _tracker().rows()]
+
+
+class JobUpdate(BaseModel):
+    status: str | None = None
+    subject: str | None = None
+    body: str | None = None
+    notes: str | None = None
+    recruiter_email: str | None = None
+
+
+def _apply_update(tracker: Tracker, row_num: int, upd: JobUpdate) -> dict:
+    rows = dict(tracker.rows())
+    if row_num not in rows:
+        raise HTTPException(404, "Job not found")
+    if rows[row_num]["Status"] == "Emailed":
+        raise HTTPException(400, "This job was already emailed and can't be changed")
+    fields = {col: getattr(upd, key) for key, col in EDITABLE.items() if getattr(upd, key) is not None}
+    if upd.status is not None:
+        if upd.status not in USER_STATUSES:
+            raise HTTPException(400, f"Status must be one of {sorted(USER_STATUSES)}")
+        if upd.status == "Approved" and not (fields.get("Recruiter Email") or rows[row_num]["Recruiter Email"]):
+            raise HTTPException(400, "Add a recruiter email before approving")
+        fields["Status"] = upd.status
+    tracker.update(row_num, **fields)
+    return rows[row_num]
+
+
+VERB = {"Approved": "approved", "Skipped": "skipped", "Drafted": "moved back to drafts"}
+
+
+def _job_name(row: dict) -> str:
+    who = row["Company"] if row.get("Source") != "LinkedIn post" else "a LinkedIn post"
+    return f"{row['Role']} at {who}"
+
+
+@app.patch("/api/jobs/{row_num}")
+def update_job(row_num: int, upd: JobUpdate):
+    try:
+        with agent_lock("jobs", wait=5):
+            tracker = _tracker()
+            row = _apply_update(tracker, row_num, upd)
+            tracker.save()
+    except Busy as e:
+        raise HTTPException(409, str(e))
+    if upd.status in VERB:
+        what = "the email for" if upd.status == "Approved" else ""
+        record("you", f"You {VERB[upd.status]} {what} {_job_name(row)}".replace("  ", " "),
+               "It will be sent on the next send" if upd.status == "Approved" else "", row_num)
+    elif upd.subject is not None or upd.body is not None:
+        record("you", f"You edited the email for {_job_name(row)}", "", row_num)
+    return {"ok": True}
+
+
+class BulkStatus(BaseModel):
+    ids: list[int]
+    status: str
+
+
+@app.post("/api/jobs/bulk-status")
+def bulk_status(req: BulkStatus):
+    try:
+        with agent_lock("jobs", wait=5):
+            tracker = _tracker()
+            skipped = []
+            for row_num in req.ids:
+                try:
+                    _apply_update(tracker, row_num, JobUpdate(status=req.status))
+                except HTTPException as e:
+                    skipped.append({"id": row_num, "reason": e.detail})
+            tracker.save()
+    except Busy as e:
+        raise HTTPException(409, str(e))
+    updated = len(req.ids) - len(skipped)
+    if updated and req.status in VERB:
+        record("you", f"You {VERB[req.status]} {updated} job{'s' if updated != 1 else ''}",
+               "Approved emails go out on the next send" if req.status == "Approved" else "")
+    return {"updated": updated, "skipped": skipped}
+
+
+def _run(name: str, fn) -> None:
+    try:
+        _action["result"] = fn(load_config())
+    except Exception as e:
+        log.exception("%s failed", name)
+        _action["error"] = friendly_error(e)
+        label = {"find": "Job search", "send": "Sending emails", "recheck": "Re-check"}.get(name, name)
+        record("problem", f"{label} didn't finish", _action["error"])
+    finally:
+        set_progress("")
+        _action["finished"] = datetime.now().isoformat(timespec="seconds")
+        _action["name"] = None
+
+
+@app.post("/api/actions/{name}")
+def start_action(name: str):
+    fn = {"find": cmd_find, "send": cmd_send, "recheck": cmd_recheck}.get(name)
+    if not fn:
+        raise HTTPException(404, "Unknown action")
+    with _action_lock:
+        if _action["name"] or external_run():
+            raise HTTPException(409, "The agent is already running (maybe the daily run). Try again when it finishes.")
+        _action.update(name=name, started=datetime.now().isoformat(timespec="seconds"), finished=None, error=None, result=None)
+    threading.Thread(target=_run, args=(name, fn), daemon=True).start()
+    return _action
+
+
+# ---------- HR outreach list ----------
+
+def _hr_row(row_num: int, row: dict, cfg: dict) -> dict:
+    subject, body = hr.render(row, cfg)
+    return {"id": row_num, **row, "preview_subject": subject, "preview_body": body}
+
+
+@app.get("/api/hr")
+def hr_list():
+    cfg = load_config()
+    e = cfg["email"]
+    resume = Path(cfg["candidate"]["resume_path"])
+    return {
+        "rows": [_hr_row(n, r, cfg) for n, r in hr.HRSheet().rows()],
+        "template": {"subject": e.get("hr_subject") or hr.DEFAULT_SUBJECT, "body": e.get("hr_body") or hr.DEFAULT_BODY},
+        "placeholders": hr.PLACEHOLDERS,
+        "sample_values": hr.values_for({"HR Name": "Priya Sharma", "Company": "Acme Technologies"}, cfg),
+        "signature": hr.signature(cfg),
+        "resume": resume.name if resume.exists() else None,
+        "file": {"path": str(hr.HR_PATH), "open": hr.open_in_spreadsheet(),
+                 "modified": datetime.fromtimestamp(hr.HR_PATH.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+                 if hr.HR_PATH.exists() else None},
+    }
+
+
+class HRContact(BaseModel):
+    name: str = ""
+    email: str
+    company: str = ""
+    role: str = ""
+    notes: str = ""
+
+
+@app.post("/api/hr")
+def hr_add(contacts: list[HRContact]):
+    added, problems = 0, []
+    try:
+        with agent_lock("hr", wait=5):
+            sheet = hr.HRSheet()
+            for c in contacts:
+                try:
+                    sheet.add(c.name, c.email, c.company, c.role, c.notes)
+                    added += 1
+                except ValueError as e:
+                    problems.append(str(e))
+            sheet.save()
+    except (Busy, hr.SheetOpen) as e:
+        raise HTTPException(409, str(e))
+    if added:
+        record("you", f"You added {added} HR contact{'s' if added != 1 else ''}", "They'll be emailed on the next send")
+    return {"added": added, "problems": problems}
+
+
+@app.post("/api/hr/import")
+async def hr_import(request: Request, filename: str):
+    try:
+        contacts = hr.parse_contacts(filename, await request.body())
+    except Exception as e:
+        raise HTTPException(400, f"Couldn't read that file: {e}")
+    if not contacts:
+        raise HTTPException(400, "No email addresses found. Use columns: HR Name, HR Email, Company, Role")
+    return hr_add([HRContact(**c) for c in contacts])
+
+
+class HRUpdate(BaseModel):
+    expect_email: str | None = None   # the row's email as the UI saw it; guards against rows moved in Excel
+    name: str | None = None
+    email: str | None = None
+    company: str | None = None
+    role: str | None = None
+    notes: str | None = None
+    status: str | None = None
+
+
+@app.patch("/api/hr/{row_num}")
+def hr_update(row_num: int, upd: HRUpdate):
+    fields = {col: getattr(upd, key) for key, col in
+              (("name", "HR Name"), ("email", "HR Email"), ("company", "Company"), ("role", "Role"), ("notes", "Notes"))
+              if getattr(upd, key) is not None}
+    if upd.email is not None and not hr.EMAIL_RE.match(upd.email.strip()):
+        raise HTTPException(400, f"“{upd.email}” isn't a valid email address")
+    if upd.status is not None:
+        if upd.status not in ("Ready", "Paused"):
+            raise HTTPException(400, "Status can be Ready or Paused")
+        fields["Status"] = upd.status
+    try:
+        with agent_lock("hr", wait=5):
+            sheet = hr.HRSheet()
+            row = sheet.check(row_num, upd.expect_email)
+            if row["Status"] in ("Emailed", "Replied") and set(fields) - {"Notes"}:
+                raise HTTPException(400, "This person was already emailed; only notes can be changed")
+            if upd.email is not None and upd.email.strip().lower() != row["HR Email"].lower() \
+                    and upd.email.strip().lower() in sheet.emails():
+                raise HTTPException(400, f"{upd.email.strip()} is already in your HR list")
+            sheet.update(row_num, **fields)
+            sheet.save()
+    except (Busy, hr.SheetOpen, LookupError) as e:
+        raise HTTPException(409, str(e))
+    return {"ok": True}
+
+
+class HRBulk(BaseModel):
+    ids: list[int]
+    emails: list[str] | None = None   # same order as ids; guards against rows moved in Excel
+    action: str   # pause | resume | delete
+
+
+@app.post("/api/hr/bulk")
+def hr_bulk(req: HRBulk):
+    if req.action not in ("pause", "resume", "delete"):
+        raise HTTPException(400, "Unknown action")
+    changed = 0
+    try:
+        with agent_lock("hr", wait=5):
+            sheet = hr.HRSheet()
+            for i, row_num in enumerate(req.ids):
+                sheet.check(row_num, req.emails[i] if req.emails else None)
+            rows = dict(sheet.rows())
+            # Highest rows first, so deleting one doesn't shift the row numbers of the others
+            for row_num in sorted(set(req.ids) & set(rows), reverse=True):
+                status = rows[row_num]["Status"]
+                if req.action == "delete":
+                    sheet.delete(row_num)
+                elif status in ("Ready", "Paused", "Failed", "Check email"):
+                    sheet.update(row_num, Status="Paused" if req.action == "pause" else "Ready")
+                else:
+                    continue
+                changed += 1
+            sheet.save()
+    except (Busy, hr.SheetOpen, LookupError) as e:
+        raise HTTPException(409, str(e))
+    verb = {"pause": "paused", "resume": "resumed", "delete": "removed"}[req.action]
+    if changed:
+        record("you", f"You {verb} {changed} HR contact{'s' if changed != 1 else ''}", "")
+    return {"changed": changed}
+
+
+@app.delete("/api/hr/{row_num}")
+def hr_delete(row_num: int):
+    try:
+        with agent_lock("hr", wait=5):
+            sheet = hr.HRSheet()
+            if row_num not in dict(sheet.rows()):
+                raise HTTPException(404, "Contact not found")
+            sheet.delete(row_num)
+            sheet.save()
+    except (Busy, hr.SheetOpen) as e:
+        raise HTTPException(409, str(e))
+    return {"ok": True}
+
+
+class HRTemplate(BaseModel):
+    subject: str
+    body: str
+
+
+@app.put("/api/hr/template")
+def hr_template(t: HRTemplate):
+    try:
+        hr.validate_template(t.subject, t.body)
+    except hr.TemplateError as e:
+        raise HTTPException(400, str(e))
+    if not t.subject.strip() or not t.body.strip():
+        raise HTTPException(400, "Subject and message can't be empty")
+    settings.update_email_template(t.subject.strip(), t.body.strip())
+    record("you", "You updated your HR email template", "")
+    return hr_list()
+
+
+@app.post("/api/hr/open")
+def hr_open():
+    import subprocess
+    if not hr.HR_PATH.exists():
+        hr.HRSheet().save()
+    try:
+        subprocess.Popen(["xdg-open", str(hr.HR_PATH)], start_new_session=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError as e:
+        raise HTTPException(500, f"Couldn't open the file: {e}")
+    return {"ok": True, "path": str(hr.HR_PATH)}
+
+
+@app.get("/api/hr/download")
+def hr_download():
+    from fastapi.responses import FileResponse
+    if not hr.HR_PATH.exists():
+        hr.HRSheet().save()
+    return FileResponse(hr.HR_PATH, filename="hr_contacts.xlsx")
+
+
+# ---------- LinkedIn account (official OAuth: sign in + posting) ----------
+
+@app.get("/api/linkedin")
+def linkedin_status():
+    return {**linkedin_account.status(load_config()["env"]), "posts": linkedin_account.history()[:20],
+            "kinds": list(linkedin_account.POST_KINDS)}
+
+
+@app.get("/api/linkedin/connect")
+def linkedin_connect():
+    from fastapi.responses import RedirectResponse
+    try:
+        return RedirectResponse(linkedin_account.auth_url(load_config()["env"]))
+    except linkedin_account.LinkedInError as e:
+        return RedirectResponse(f"/#/linkedin?error={quote(str(e))}")
+
+
+@app.get("/api/linkedin/callback")
+def linkedin_callback(code: str = "", state: str = "", error: str = "", error_description: str = ""):
+    from fastapi.responses import RedirectResponse
+    if error:
+        msg = linkedin_account.explain_error(error, error_description)
+        record("problem", "LinkedIn connection didn't finish", msg)
+        return RedirectResponse(f"/#/linkedin?error={quote(msg)}")
+    try:
+        info = linkedin_account.finish_connect(load_config()["env"], code, state)
+    except (linkedin_account.LinkedInError, requests.RequestException) as e:
+        return RedirectResponse(f"/#/linkedin?error={quote(str(e))}")
+    record("you", f"You connected LinkedIn as {info['name']}", "The app can post for you when you press Post")
+    return RedirectResponse("/#/linkedin?connected=1")
+
+
+@app.post("/api/linkedin/disconnect")
+def linkedin_disconnect():
+    linkedin_account.disconnect()
+    record("you", "You disconnected LinkedIn", "")
+    return linkedin_status()
+
+
+class PostDraft(BaseModel):
+    kind: str = "custom"
+    topic: str = ""
+
+
+@app.post("/api/linkedin/draft")
+def linkedin_draft(req: PostDraft):
+    try:
+        return {"text": linkedin_account.draft(load_config(), req.kind, req.topic)}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(502, friendly_error(e))
+
+
+class PostText(BaseModel):
+    text: str
+
+
+@app.post("/api/linkedin/post")
+def linkedin_post(req: PostText):
+    try:
+        entry = linkedin_account.publish(req.text)
+    except linkedin_account.LinkedInError as e:
+        raise HTTPException(400, str(e))
+    except requests.RequestException as e:
+        raise HTTPException(502, friendly_error(e))
+    record("you", "You posted on LinkedIn", req.text.strip().splitlines()[0][:90])
+    return {"post": entry, **linkedin_status()}
+
+
+@app.get("/api/activity")
+def activity(limit: int = 300):
+    return {"items": recent(limit)}
+
+
+@app.get("/api/logs")
+def logs(lines: int = 200):
+    path = ROOT / "logs" / "agent.log"
+    if not path.exists():
+        return {"lines": []}
+    return {"lines": path.read_text(errors="replace").splitlines()[-lines:]}
+
+
+class SettingsUpdate(BaseModel):
+    candidate: dict | None = None
+    search: dict | None = None
+    email: dict | None = None
+    secrets: dict[str, str] | None = None   # only non-empty values are saved
+
+
+@app.get("/api/settings")
+def get_settings():
+    return settings.get_settings()
+
+
+@app.put("/api/settings")
+def put_settings(req: SettingsUpdate):
+    try:
+        if req.candidate or req.search or req.email:
+            settings.update_config(req.model_dump(include={"candidate", "search", "email"}))
+            record("you", "You updated your settings",
+                   ", ".join(n for n, v in (("profile", req.candidate), ("search", req.search), ("email", req.email)) if v))
+        if req.secrets and any((v or "").strip() for v in req.secrets.values()):
+            settings.update_env(req.secrets)
+            record("you", "You updated your account keys", "Saved securely on this computer")
+    except settings.SettingsError as e:
+        raise HTTPException(400, str(e))
+    return settings.get_settings()
+
+
+@app.delete("/api/settings/secrets/{key}")
+def clear_secret(key: str):
+    settings.clear_env(key)
+    return settings.get_settings()
+
+
+@app.post("/api/settings/resume")
+async def upload_resume(request: Request, filename: str):
+    try:
+        name = settings.save_resume(filename, await request.body())
+    except settings.SettingsError as e:
+        raise HTTPException(400, str(e))
+    record("you", "You uploaded a new resume", f"{name} will be attached to every email")
+    return {"name": name}
+
+
+@app.post("/api/settings/test-gmail")
+def test_gmail():
+    try:
+        return {"message": settings.test_gmail()}
+    except settings.SettingsError as e:
+        raise HTTPException(400, str(e))
+
+
+class ProfileRequest(BaseModel):
+    linkedin_headline: str = ""
+    linkedin_about: str = ""
+    naukri_headline: str = ""
+    naukri_summary: str = ""
+    naukri_skills: str = ""
+
+
+@app.get("/api/profile")
+def get_profile():
+    return {"result": profile.last_result(), "linkedin_pdf": profile.linkedin_pdf_info()}
+
+
+@app.post("/api/profile/linkedin-pdf")
+async def upload_linkedin_pdf(request: Request):
+    try:
+        profile.save_linkedin_pdf(await request.body())
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    record("you", "You uploaded your LinkedIn profile PDF", "Used to compare your current profile with the suggestions")
+    return {"linkedin_pdf": profile.linkedin_pdf_info()}
+
+
+@app.post("/api/profile")
+def make_profile(req: ProfileRequest):
+    try:
+        result = profile.suggest(load_config(), req.model_dump())
+        record("you", "New LinkedIn & Naukri profile suggestions are ready", "See Profile boost")
+        return {"result": result}
+    except (ValueError, FileNotFoundError) as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        log.exception("Profile suggestions failed")
+        raise HTTPException(502, f"Couldn't generate suggestions: {e}")
+
+
+_dist = ROOT / "ui" / "dist"
+if _dist.exists():
+    app.mount("/", StaticFiles(directory=_dist, html=True), name="ui")

@@ -1,0 +1,12 @@
+[Unit]
+Description=Job Agent dashboard (http://localhost:8765)
+After=network-online.target
+
+[Service]
+WorkingDirectory=/home/ubuntu/Desktop/auto-apply-agent
+ExecStart=/home/ubuntu/Desktop/auto-apply-agent/.venv/bin/python -m jobagent ui
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

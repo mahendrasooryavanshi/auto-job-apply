@@ -1,0 +1,46 @@
+# Copy to config.yaml (done automatically on first start), then edit from the dashboard's Settings page.
+candidate:
+  name: Your Name
+  phone: ''
+  linkedin: ''
+  naukri: ''
+  experience_years: 0
+  current_ctc: ''
+  expected_ctc: ''
+  notice_period: ''
+  resume_path: resume/resume.pdf
+search:
+  roles:
+  - Node.js Developer
+  locations:
+  - India
+  primary_skills:
+  - nodejs
+  - reactjs
+  secondary_skills: []
+  exclude_keywords:
+  - intern
+  exclude_companies: []
+  posted_within_days: 3
+  min_match_percent: 50
+  required_skills:
+  - nodejs
+  - reactjs
+  exclude_title_keywords:
+  - java
+  - .net
+  - php
+  - python
+  - golang
+  - android
+  - ios
+  - flutter
+  - salesforce
+  - sap
+email:
+  daily_limit: 30
+  auto_send: false
+  delay_seconds: 45
+  use_claude: true
+  follow_up_days: 3
+sheet_path: data/job_tracker.xlsx

@@ -1,0 +1,8 @@
+[Unit]
+Description=Job Agent daily run: find jobs, check replies, send approved emails and follow-ups
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/ubuntu/Desktop/auto-apply-agent
+ExecStart=/home/ubuntu/Desktop/auto-apply-agent/.venv/bin/python -m jobagent run

@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Job Agent every day at 9:30
+
+[Timer]
+OnCalendar=*-*-* 09:30:00
+# If the laptop was off or asleep at 9:30, run as soon as it's back
+Persistent=true
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target

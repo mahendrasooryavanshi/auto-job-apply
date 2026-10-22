@@ -1,0 +1,10 @@
+.env
+data/
+logs/
+resume/
+__pycache__/
+.venv/
+config.yaml
+ui/node_modules/
+ui/dist/
+*.tmp.xlsx
