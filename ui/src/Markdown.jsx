@@ -1,5 +1,6 @@
 // Small, safe Markdown renderer for assistant replies: builds React elements (never raw HTML).
 import { Fragment } from "react";
+import { safeUrl } from "./utils.js";
 
 const INLINE = /(\*\*(?:[^*]|\*(?!\*))+\*\*|`[^`]+`|\[[^\]]+\]\(https?:\/\/[^)\s]+\)|https?:\/\/[^\s)]+|\*[^*\s][^*]*\*)/g;
 
@@ -9,8 +10,8 @@ function inline(text, key = "") {
     if (part.startsWith("**") && part.endsWith("**")) return <strong key={k}>{inline(part.slice(2, -2), k)}</strong>;
     if (part.startsWith("`") && part.endsWith("`")) return <code key={k}>{part.slice(1, -1)}</code>;
     const link = /^\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)$/.exec(part);
-    if (link) return <a key={k} href={link[2]} target="_blank" rel="noreferrer">{link[1]}</a>;
-    if (/^https?:\/\//.test(part)) return <a key={k} href={part} target="_blank" rel="noreferrer">{part.replace(/^https?:\/\/(www\.)?/, "").slice(0, 60)}</a>;
+    if (link) return <a key={k} href={safeUrl(link[2])} target="_blank" rel="noreferrer">{link[1]}</a>;
+    if (/^https?:\/\//.test(part)) return <a key={k} href={safeUrl(part)} target="_blank" rel="noreferrer">{part.replace(/^https?:\/\/(www\.)?/, "").slice(0, 60)}</a>;
     if (/^\*[^*].*\*$/.test(part)) return <em key={k}>{part.slice(1, -1)}</em>;
     return <Fragment key={k}>{part}</Fragment>;
   });

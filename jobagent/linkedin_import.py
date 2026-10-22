@@ -108,11 +108,9 @@ def run_import(cfg: dict) -> str:
     """Runs as a dashboard action: add saved/applied jobs to the tracker, store saved-post links.
     Input is either the bookmark's pending list or an uploaded LinkedIn data export."""
     if PENDING_PATH.exists():
-        data = json.loads(PENDING_PATH.read_text())
-        PENDING_PATH.unlink()
+        data, source = json.loads(PENDING_PATH.read_text()), PENDING_PATH
     elif EXPORT_PATH.exists():
-        data = parse_export(META_PATH.read_text(), EXPORT_PATH.read_bytes())
-        EXPORT_PATH.unlink(missing_ok=True)
+        data, source = parse_export(META_PATH.read_text(), EXPORT_PATH.read_bytes()), EXPORT_PATH
     else:
         raise RuntimeError("Nothing to import. Use the “Send to Job Agent” bookmark or upload your LinkedIn data export.")
     if data["posts"]:
@@ -121,7 +119,7 @@ def run_import(cfg: dict) -> str:
         tracker = Tracker(cfg["sheet_path"])
         known = set(tracker._links)
     todo = [(jid, j) for jid, j in data["jobs"].items() if f"https://www.linkedin.com/jobs/view/{jid}/" not in known]
-    added = applied = 0
+    added = applied = done = 0
     for i, (job_id, j) in enumerate(todo[:MAX_JOBS]):
         set_progress(f"Importing LinkedIn jobs: {i + 1} of {min(len(todo), MAX_JOBS)}")
         try:
@@ -148,9 +146,17 @@ def run_import(cfg: dict) -> str:
             tracker = Tracker(cfg["sheet_path"])
             if not tracker.has(link) and same_job_key(job) not in tracker.same_job_keys():
                 tracker.add(job)
-                tracker.save()
+                tracker.save(force=True)
+        done += 1
         time.sleep(DELAY)
-    left = max(0, len(todo) - MAX_JOBS)
+    # only now drop what was imported; whatever is left waits in the pending file for the next run
+    left = len(todo) - done
+    if left:
+        PENDING_PATH.write_text(json.dumps({"jobs": dict(todo[done:]), "posts": [], "files": data["files"]}))
+    elif source == PENDING_PATH:
+        PENDING_PATH.unlink(missing_ok=True)
+    if source == EXPORT_PATH:
+        EXPORT_PATH.unlink(missing_ok=True)
     msg = (f"Imported {added} saved jobs and {applied} jobs you applied to"
            + (f" · {len(data['posts'])} saved-post links" if data["posts"] else "")
            + (f" · {left} more next time (run the import again)" if left else ""))

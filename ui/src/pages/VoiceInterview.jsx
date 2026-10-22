@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api.js";
 import { Icon, Toggle } from "../components.jsx";
 import Markdown from "../Markdown.jsx";
@@ -80,15 +80,24 @@ export default function VoiceInterview({ job, jobId, notify }) {
   const listeningRef = useRef(false);
   const silenceRef = useRef(null);
   const answerRef = useRef("");
+  const aliveRef = useRef(true);          // false once the page is gone: nothing may speak or listen after that
+  const speechRef = useRef(0);            // bumped to cancel whatever is being prepared or spoken
+  const speechAbortRef = useRef(null);
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
+  // Callbacks from the mic and from finished requests run long after the render that made them: read current values here
+  const live = useRef({});
+  live.current = { key, jobId, muted, voiceName, accent, autoSend, notify };
 
-  useEffect(() => { setMessages(loadThread(key)); stopAll(); }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setMessages(loadThread(key)); stopAll(); setPhase("idle"); }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     window.speechSynthesis?.getVoices();
     api.voices().then((d) => setVoices(d.voices)).catch(() => {});
   }, []);
-  useEffect(() => () => stopAll(), []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => { aliveRef.current = false; stopAll(); };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {   // answer timer, like a real interview clock
     if (phase !== "listening") return undefined;
     const t = setInterval(() => setSeconds((s) => s + 1), 1000);
@@ -98,17 +107,21 @@ export default function VoiceInterview({ job, jobId, notify }) {
   const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
   const questionNo = messages.filter((m) => m.role === "assistant").length;
 
-  function stopAll() {
-    listeningRef.current = false;
-    clearTimeout(silenceRef.current);
-    try { recRef.current?.stop(); } catch { /* already stopped */ }
+  function stopSpeaking() {
+    speechRef.current += 1;
+    speechAbortRef.current?.abort();
     window.speechSynthesis?.cancel();
     audioRef.current?.pause();
   }
 
-  const browserSpeak = useCallback((text, then) => {
+  function stopAll() {
+    stopListening();
+    stopSpeaking();
+  }
+
+  function browserSpeak(text, then) {
     const synth = window.speechSynthesis;
-    if (!synth || muted || !text) { then?.(); return; }
+    if (!synth || live.current.muted || !text) { then?.(); return; }
     synth.cancel();
     // Chrome stops long utterances after ~15 s, so speak sentence by sentence
     const chunks = text.match(/[^.!?]+[.!?]*\s*/g) || [text];
@@ -126,25 +139,35 @@ export default function VoiceInterview({ job, jobId, notify }) {
       if (i === chunks.length - 1) { u.onend = finish; u.onerror = finish; }
       synth.speak(u);
     });
-  }, [muted]);
+  }
 
-  const speak = useCallback(async (text, then) => {
-    if (muted || !text) { then?.(); return; }
-    if (voiceName !== BROWSER_VOICE) {
+  // `then` runs only if this speech wasn't stopped (Mute, Stop, a newer question, or leaving the page)
+  async function speak(text, then) {
+    if (!aliveRef.current) return;
+    stopSpeaking();
+    const my = speechRef.current;
+    const current = () => aliveRef.current && my === speechRef.current;
+    const after = () => { if (current()) then?.(); };
+    const { muted: isMuted, voiceName: name, accent: indian } = live.current;
+    if (isMuted || !text) { after(); return; }
+    if (name !== BROWSER_VOICE) {
+      const abort = new AbortController();
+      speechAbortRef.current = abort;
       try {
         setPhase("preparing");
-        audioRef.current?.pause();
-        const playing = await streamSpeak(text, { voice: voiceName, indianAccent: accent });
+        const playing = await streamSpeak(text, { voice: name, indianAccent: indian, signal: abort.signal });
+        if (!current()) { playing.pause(); return; }
         audioRef.current = playing;
         setPhase("speaking");
-        playing.done.then((stopped) => { if (!stopped) then?.(); });
+        playing.done.then((stopped) => { if (!stopped) after(); });
         return;
       } catch (e) {
-        notify(`${e.message}. Using the browser voice for now.`, "error");
+        if (!current()) return;   // stopped while preparing
+        live.current.notify(`${e.message}. Using the browser voice for now.`, "error");
       }
     }
-    browserSpeak(text, then);
-  }, [muted, voiceName, accent, browserSpeak, notify]);
+    browserSpeak(text, after);
+  }
 
   async function preview() {
     unlockAudio();
@@ -154,9 +177,10 @@ export default function VoiceInterview({ job, jobId, notify }) {
   }
 
   function startListening() {
+    if (!aliveRef.current) return;
     if (!Recognition) { setPhase("idle"); return; }
-    window.speechSynthesis?.cancel();
-    audioRef.current?.pause();
+    stopSpeaking();     // also makes the cancelled speech's "finished" callback a no-op, so it can't start a second mic
+    stopListening();    // never two recognizers at once
     answerRef.current = "";
     setFinalText(""); setInterim(""); setSeconds(0);
     listeningRef.current = true;
@@ -166,26 +190,27 @@ export default function VoiceInterview({ job, jobId, notify }) {
     rec.continuous = true;
     rec.interimResults = true;
     rec.onresult = (e) => {
-      let live = "";
+      if (recRef.current !== rec) return;
+      let partial = "";
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const r = e.results[i];
         if (r.isFinal) answerRef.current = `${answerRef.current} ${r[0].transcript}`.trim();
-        else live += r[0].transcript;
+        else partial += r[0].transcript;
       }
       setFinalText(answerRef.current);
-      setInterim(live);
+      setInterim(partial);
       clearTimeout(silenceRef.current);
-      if (autoSend && answerRef.current) silenceRef.current = setTimeout(() => submit(), SILENCE_MS);
+      if (live.current.autoSend && answerRef.current) silenceRef.current = setTimeout(() => submit(), SILENCE_MS);
     };
     rec.onerror = (e) => {
       if (e.error === "not-allowed" || e.error === "service-not-allowed") {
         listeningRef.current = false;
         setPhase("idle");
-        notify("Microphone blocked. Click the 🔒 icon in the address bar and allow the microphone.", "error");
+        live.current.notify("Microphone blocked. Click the 🔒 icon in the address bar and allow the microphone.", "error");
       }
     };
     rec.onend = () => {   // Chrome ends recognition on its own after a while: keep listening until the answer is sent
-      if (listeningRef.current) { try { rec.start(); } catch { /* restarting */ } }
+      if (listeningRef.current && aliveRef.current && recRef.current === rec) { try { rec.start(); } catch { /* restarting */ } }
     };
     recRef.current = rec;
     try { rec.start(); } catch { /* already started */ }
@@ -198,17 +223,23 @@ export default function VoiceInterview({ job, jobId, notify }) {
   }
 
   async function ask(userText) {
+    if (!aliveRef.current) return;
+    const { key: threadKey, jobId: job } = live.current;   // the thread this answer belongs to, even if you switch jobs meanwhile
     const next = [...messagesRef.current, { role: "user", content: userText }];
-    setMessages(next); saveThread(key, next);
+    setMessages(next); saveThread(threadKey, next);
     setPhase("thinking");
+    const stillHere = () => aliveRef.current && live.current.key === threadKey;
     try {
-      const res = await api.assistant(next.map(({ role, content }) => ({ role, content })), jobId ? Number(jobId) : null, "voice");
+      const res = await api.assistant(next.map(({ role, content }) => ({ role, content })), job ? Number(job) : null, "voice");
       const done = [...next, { role: "assistant", content: res.reply }];
-      setMessages(done); saveThread(key, done);
+      saveThread(threadKey, done);
+      if (!stillHere()) return;
+      setMessages(done);
       const ended = /end the interview/i.test(userText);
       speak(spokenPart(res.reply), () => (ended ? setPhase("idle") : startListening()));
     } catch (e) {
-      notify(e.message, "error");
+      if (!stillHere()) return;
+      live.current.notify(e.message, "error");
       setPhase("idle");
     }
   }
@@ -219,6 +250,13 @@ export default function VoiceInterview({ job, jobId, notify }) {
     if (!text) { setPhase("idle"); return; }
     setInterim("");
     ask(text);
+  }
+
+  function toggleMute() {
+    setMuted(!muted);
+    live.current.muted = !muted;
+    stopSpeaking();
+    if (phase === "preparing" || phase === "speaking") setPhase("idle");
   }
 
   function start() {
@@ -269,7 +307,7 @@ export default function VoiceInterview({ job, jobId, notify }) {
           {Object.keys(voices).map((name) => <option key={name} value={name}>{name}</option>)}
           <option value={BROWSER_VOICE}>Browser</option>
         </select>
-        <button className="btn btn-sm" onClick={() => { setMuted(!muted); window.speechSynthesis?.cancel(); audioRef.current?.pause(); }}>{muted ? "🔇 Unmute" : "🔊 Mute"}</button>
+        <button className="btn btn-sm" onClick={toggleMute}>{muted ? "🔇 Unmute" : "🔊 Mute"}</button>
       </div>
 
       <div className="voice-stage">

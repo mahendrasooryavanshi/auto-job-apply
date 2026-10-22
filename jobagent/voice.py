@@ -90,7 +90,11 @@ def stream(key: str, text: str, voice: str = "Sulafat", indian_accent: bool = Tr
     for model in MODELS:   # separate free quota per model: move on when one is used up or unavailable
         if _cooling.get(model, 0) > time.time():
             continue
-        resp = requests.post(STREAM_API.format(model), headers={"x-goog-api-key": key}, json=body, timeout=60, stream=True)
+        try:
+            resp = requests.post(STREAM_API.format(model), headers={"x-goog-api-key": key}, json=body, timeout=60, stream=True)
+        except requests.RequestException as e:
+            last = f"{model}: {e.__class__.__name__}"
+            continue
         if resp.status_code in (404, 429, 500, 503):
             if resp.status_code == 429:
                 _cooling[model] = time.time() + COOLDOWN
@@ -99,9 +103,14 @@ def stream(key: str, text: str, voice: str = "Sulafat", indian_accent: bool = Tr
             continue
         if resp.status_code in (400, 401, 403) and "API key" in resp.text:
             raise VoiceError("Gemini rejected the API key")
-        resp.raise_for_status()
-        chunks = _audio_chunks(resp)
-        first = next(chunks, None)
+        try:
+            resp.raise_for_status()
+            chunks = _audio_chunks(resp)
+            first = next(chunks, None)
+        except requests.RequestException as e:
+            last = f"{model}: {e.__class__.__name__}"
+            resp.close()
+            continue
         if not first:
             last = f"{model}: no audio"
             continue
@@ -117,6 +126,8 @@ def _audio_chunks(resp) -> Iterator[tuple[int, bytes]]:
         try:
             part = json.loads(line[5:])["candidates"][0]["content"]["parts"][0]["inlineData"]
         except (KeyError, IndexError, ValueError):
+            continue
+        if not part.get("data"):
             continue
         rate = int((re.search(r"rate=(\d+)", part.get("mimeType", "")) or [0, 24000])[1])
         yield rate, base64.b64decode(part["data"])

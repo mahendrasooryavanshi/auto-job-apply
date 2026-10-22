@@ -56,7 +56,14 @@ def check_inbox(address: str, password: str, contacts: dict[str, str]) -> tuple[
         if ok != "OK":
             imap.select("INBOX", readonly=True)
         for email, sent_on in contacts.items():
-            since = _imap_date(sent_on)
+            if any(c in email for c in '"\\\r\n'):
+                log.warning("Skipping reply check for odd address %r", email)
+                continue   # can't be quoted safely in an IMAP SEARCH
+            try:
+                since = _imap_date(str(sent_on))
+            except ValueError:
+                log.warning("Skipping reply check for %s: unreadable sent date %r", email, sent_on)
+                continue
             _, data = imap.search(None, "FROM", f'"{email}"', "SINCE", since)
             for msg_id in data[0].split():
                 _, msg = imap.fetch(msg_id, f"(BODY.PEEK[HEADER.FIELDS ({' '.join(AUTO_HEADERS)} DATE)])")

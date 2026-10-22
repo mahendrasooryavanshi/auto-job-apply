@@ -34,3 +34,13 @@ export function nextDailyRun(date = new Date()) {
   const today = next.toDateString() === date.toDateString();
   return `${today ? "today" : "tomorrow"} at 9:30`;
 }
+
+// Only http(s) links may go into an href: a "javascript:" URL from scraped or AI text would run in the dashboard
+export function safeUrl(url) {
+  try {
+    const u = new URL(String(url || "").trim());
+    return u.protocol === "http:" || u.protocol === "https:" ? u.href : undefined;
+  } catch {
+    return undefined;
+  }
+}

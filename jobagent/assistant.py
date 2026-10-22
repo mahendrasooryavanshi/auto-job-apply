@@ -14,7 +14,7 @@ import re
 import secrets
 import socket
 from pathlib import Path
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urljoin, urlparse
 
 import anthropic
 import requests
@@ -133,12 +133,21 @@ def _web_search(env: dict, query: str) -> dict:
     return out
 
 
+MAX_REDIRECTS = 5
+
+
 def _read_page(url: str) -> dict:
-    if not _public_url(url):
-        return {"error": "Only public web pages can be read."}
-    resp = requests.get(url, timeout=25, headers={"User-Agent": UA, "Accept-Language": "en"}, stream=True, allow_redirects=True)
-    if not _public_url(resp.url):
-        return {"error": "That page redirects to a non-public address."}
+    # redirects are followed by hand so every hop is checked before it is requested
+    for hop in range(MAX_REDIRECTS + 1):
+        if not _public_url(url):
+            return {"error": "That page redirects to a non-public address." if hop else "Only public web pages can be read."}
+        resp = requests.get(url, timeout=25, headers={"User-Agent": UA, "Accept-Language": "en"}, stream=True, allow_redirects=False)
+        if not resp.is_redirect:
+            break
+        url = urljoin(url, resp.headers["location"])
+        resp.close()
+    else:
+        return {"error": "That page redirects too many times."}
     raw = resp.raw.read(2_000_000, decode_content=True)
     if resp.status_code >= 400:
         return {"error": f"The page answered HTTP {resp.status_code} (it may need a login or block robots)."}
@@ -158,6 +167,8 @@ COMPANY_WORDS = re.compile(r"\b(company|corporation|inc\.?|ltd|limited|startup|f
 
 def _company_lookup(name: str) -> dict:
     """Wikipedia summary for the company itself (not a same-named word: "Okta" the company, not the cloud unit)."""
+    if not name.strip():
+        return {"error": "Give a company name to look up."}
     headers = {"User-Agent": "JobAgent/1.0"}
     found = requests.get("https://en.wikipedia.org/w/api.php", timeout=20, headers=headers,
                          params={"action": "query", "list": "search", "srsearch": f"{name} company", "srlimit": 5, "format": "json"}).json()
@@ -190,7 +201,7 @@ def run_tool(env: dict, name: str, args: dict, sources: list) -> dict:
                 sources.append({"title": f"Wikipedia: {out['title']}", "url": out["url"]})
         else:
             out = {"error": f"Unknown tool {name}"}
-    except (requests.RequestException, ValueError) as e:
+    except (requests.RequestException, ValueError, TypeError, KeyError, IndexError, AttributeError) as e:
         out = {"error": f"Couldn't complete {name}: {e.__class__.__name__}"}
     log.info("assistant tool %s(%s) -> %s", name, json.dumps(args)[:120], "error" if "error" in out else "ok")
     return out
@@ -298,9 +309,12 @@ def chat(cfg: dict, messages: list[dict], job: dict | None = None, mode: str = "
     """messages: [{"role": "user"|"assistant", "content": str}, ...]. Returns {"reply", "sources"}."""
     env = cfg["env"]
     system = _system(cfg, job, mode, language)
-    history = [m for m in messages if m.get("content") or m.get("attachments")][-30:]
-    for m in history:
-        m["content"] = m.get("content") or "Please look at the attached file(s)."
+    history = [{**m, "content": m.get("content") or "Please look at the attached file(s)."}
+               for m in messages if m.get("content") or m.get("attachments")][-30:]
+    while history and history[0].get("role") != "user":   # the conversation must start with the user
+        history.pop(0)
+    if not history:
+        raise ValueError("Ask a question to start the conversation")
     use_tools = mode in ("chat", "agent")
     if mode == "agent":
         if not env["GEMINI_API_KEY"]:
@@ -347,9 +361,18 @@ def _chat_gemini(env: dict, system: str, history: list[dict], use_tools: bool, a
         contents.append(content)   # keep the model's turn as-is (it carries the thought signature Gemini requires)
         contents.append({"role": "user", "parts": [
             {"functionResponse": {"name": c["name"], "response":
-                agent_tools.run_read(c["name"], c.get("args") or {}, ui) if c["name"] in agent_tools.READ_NAMES
+                _run_read(c["name"], c.get("args") or {}, ui) if c["name"] in agent_tools.READ_NAMES
                 else run_tool(env, c["name"], c.get("args") or {}, sources)}} for c in calls]})
-    return {"reply": "I gathered a lot of information but ran out of research steps. Ask me a narrower question.", "sources": _dedupe(sources)}
+    return {"reply": "I gathered a lot of information but ran out of research steps. Ask me a narrower question.",
+            "sources": _dedupe(sources), "ui": ui}
+
+
+def _run_read(name: str, args: dict, ui: list) -> dict:
+    try:
+        return agent_tools.run_read(name, args, ui)
+    except (ValueError, TypeError, KeyError, AttributeError) as e:   # bad args from the model: tell it, don't fail the request
+        log.warning("agent tool %s(%s) failed: %s", name, json.dumps(args)[:120], e)
+        return {"error": f"Couldn't complete {name}: {e.__class__.__name__}"}
 
 
 def _chat_claude(env: dict, system: str, history: list[dict], use_tools: bool) -> dict:
@@ -381,10 +404,10 @@ def _chat_claude(env: dict, system: str, history: list[dict], use_tools: bool) -
             messages.append({"role": "assistant", "content": resp.content})
             continue
         if resp.stop_reason == "refusal":
-            return {"reply": "I can't help with that one. Try asking differently.", "sources": []}
+            return {"reply": "I can't help with that one. Try asking differently.", "sources": [], "ui": []}
         text = "".join(b.text for b in resp.content if b.type == "text").strip()
-        return {"reply": text, "sources": _dedupe(sources)}
-    return {"reply": "The research took too long. Ask a narrower question.", "sources": _dedupe(sources)}
+        return {"reply": text, "sources": _dedupe(sources), "ui": []}
+    return {"reply": "The research took too long. Ask a narrower question.", "sources": _dedupe(sources), "ui": []}
 
 
 def _dedupe(sources: list[dict]) -> list[dict]:

@@ -11,9 +11,12 @@ export function unlockAudio() {
 
 // Returns { pause(), done } once audio is on its way; throws (before any sound) if the natural voice is unavailable.
 // `done` resolves when playback finishes (false) or is stopped with pause() (true).
-export async function streamSpeak(text, { voice, indianAccent = true, persona = "interviewer" } = {}) {
+// Aborting `signal` cancels the request while the voice is still being prepared.
+export async function streamSpeak(text, { voice, indianAccent = true, persona = "interviewer", signal } = {}) {
   const audio = unlockAudio();
   const abort = new AbortController();
+  if (signal?.aborted) abort.abort();
+  else signal?.addEventListener("abort", () => abort.abort(), { once: true });
   const res = await fetch("/api/assistant/speak-stream", {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Job-Agent": "1" },

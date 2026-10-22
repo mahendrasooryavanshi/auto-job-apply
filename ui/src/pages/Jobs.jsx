@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api.js";
 import { CompanyAvatar, Icon, MatchPill, SourceTag, StatusBadge, timeAgo } from "../components.jsx";
 
@@ -42,7 +42,13 @@ export default function Jobs({ jobs, counts, filter, setFilter, openId, onOpen, 
   const [search, setSearch] = useState("");          // query after typing pauses
   const [limit, setLimit] = useState(loadPageSize);
   // Cursor-based paging: cursors[i] is where page i starts ("" = newest). Going back pops the stack.
-  const [cursors, setCursors] = useState([""]);
+  // The stack belongs to one set of filters: a new filter, search or page size starts again from the newest jobs
+  // in the same render, so no request goes out with the old cursor.
+  const pagingKey = JSON.stringify([filter, search, limit, filters]);
+  const [paging, setPaging] = useState({ key: pagingKey, cursors: [""] });
+  const cursors = paging.key === pagingKey ? paging.cursors : [""];
+  const setCursors = (next) => setPaging({ key: pagingKey, cursors: next });
+  const requestRef = useRef(0);
   const [page, setPage] = useState(null);
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState(new Set());
@@ -60,20 +66,22 @@ export default function Jobs({ jobs, counts, filter, setFilter, openId, onOpen, 
     return () => clearTimeout(t);
   }, [query]);
 
-  // A new filter, search or page size starts again from the newest jobs
-  useEffect(() => { setCursors([""]); setSelected(new Set()); }, [filter, search, limit, filters]);
+  useEffect(() => { setSelected(new Set()); }, [pagingKey]);
 
   const load = useCallback(async (quiet) => {
+    const id = ++requestRef.current;   // only the newest request may update the page
     if (!quiet) setLoading(true);
     try {
-      setPage(await api.jobsPage({ status: filter, q: search, limit, cursor, ...filters }));
+      const res = await api.jobsPage({ status: filter, q: search, limit, cursor, ...filters });
+      if (id === requestRef.current) setPage(res);
     } catch (e) {
+      if (id !== requestRef.current) return;
       if (!quiet) notify(e.message, "error");
-      if (e.message.includes("cursor")) setCursors([""]);
+      if (e.message.includes("cursor")) setPaging({ key: pagingKey, cursors: [""] });
     } finally {
-      setLoading(false);
+      if (id === requestRef.current) setLoading(false);
     }
-  }, [filter, search, limit, cursor, filters, notify]);
+  }, [filter, search, limit, cursor, filters, pagingKey, notify]);
 
   useEffect(() => { load(false); }, [load]);
   // Keep the current page fresh (statuses change while emails send); the cursor keeps it in place

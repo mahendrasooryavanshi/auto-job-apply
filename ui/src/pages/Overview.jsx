@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api.js";
 import { CompanyAvatar, Icon, MatchPill, Ring, SourceTag, timeAgo } from "../components.jsx";
-import { daysOld, greeting, nextDailyRun, rankJob } from "../utils.js";
+import { daysOld, greeting, nextDailyRun, rankJob, safeUrl } from "../utils.js";
 
 const PIPELINE = [
   ["Drafted", "To review"],
@@ -150,7 +150,7 @@ export default function Overview({ summary, jobs, onOpen, onShowJobs, onGo }) {
                   {j.Status === "Drafted" ? (
                     <button className="btn btn-sm btn-primary" onClick={(e) => { e.stopPropagation(); onOpen(j.id); }}>Review</button>
                   ) : (
-                    <a className="btn btn-sm" href={j["Job Link"]} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>Apply ↗</a>
+                    <a className="btn btn-sm" href={safeUrl(j["Job Link"])} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>Apply ↗</a>
                   )}
                 </li>
               ))}

@@ -102,14 +102,19 @@ export default function App() {
     setWasRunning(running || null);
   }, [running, summary?.action?.finished]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const [starting, setStarting] = useState(false);   // a run was requested and the server hasn't answered yet
   async function runAction(name) {
+    if (starting) return;
+    setStarting(true);
     try {
       await api.startAction(name);
       setWasRunning(name);  // so a run that ends before the next poll still reports its result
       notify(name === "find" ? "Searching for new jobs…" : "Sending emails (one every few seconds)…");
-      refresh();
+      await refresh();
     } catch (e) {
       notify(e.message, "error");
+    } finally {
+      setStarting(false);
     }
   }
 
@@ -153,11 +158,11 @@ export default function App() {
           <div className="actions">
             <ThemePicker theme={theme} onChange={changeTheme} accents={ACCENTS} />
             {running && <span className="running"><span className="spinner" /> {summary?.action?.progress || (running === "find" ? "Finding jobs…" : running === "send" ? "Sending emails…" : "Working…")}</span>}
-            <button className="btn" onClick={() => runAction("find")} disabled={!!running || serverDown || noJobSource}
+            <button className="btn" onClick={() => runAction("find")} disabled={!!running || starting || serverDown || noJobSource}
               title={noJobSource ? "Add a JSearch or Adzuna key in Settings first" : "Search job sites now"}>
               <Icon name="search" size={16} /> Find jobs now
             </button>
-            <button className="btn btn-primary" onClick={() => runAction("send")} disabled={!!running || !(counts.Approved || summary?.hr_ready)}>
+            <button className="btn btn-primary" onClick={() => runAction("send")} disabled={!!running || starting || !(counts.Approved || summary?.hr_ready)}>
               <Icon name="send" size={16} /> Send now{(counts.Approved || 0) + (summary?.hr_ready || 0) ? ` (${(counts.Approved || 0) + (summary?.hr_ready || 0)})` : ""}
             </button>
           </div>
@@ -193,7 +198,7 @@ export default function App() {
         {page === "profile" && <Profile notify={notify} setup={summary?.setup} />}
         {page === "linkedin" && <LinkedIn notify={notify} />}
         {page === "assistant" && <Assistant jobs={jobs} notify={notify} initialJobId={assistantJob} onOpenJob={setOpenId} onChanged={refresh} />}
-        {page === "hr" && <HrOutreach notify={notify} summary={summary} onRunSend={() => runAction("send")} refreshSummary={refresh} />}
+        {page === "hr" && <HrOutreach notify={notify} summary={summary} onRunSend={() => runAction("send")} sending={starting} refreshSummary={refresh} />}
       </main>
 
       {jobs.find((j) => j.id === openId) && (

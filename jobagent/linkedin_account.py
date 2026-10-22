@@ -98,10 +98,18 @@ def finish_connect(env: dict, code: str, state: str) -> dict:
             "scope": tok.get("scope", ""), "sub": info["sub"], "name": info.get("name", ""),
             "email": info.get("email", ""), "picture": info.get("picture", ""),
             "connected_at": datetime.now().strftime("%Y-%m-%d %H:%M")}
-    TOKEN_PATH.parent.mkdir(exist_ok=True)
-    TOKEN_PATH.write_text(json.dumps(data))
-    os.chmod(TOKEN_PATH, 0o600)
+    _save_token(data)
     return data
+
+
+def _save_token(data: dict) -> None:
+    """Written to a file that is private (0600) from the moment it exists, then moved into place."""
+    TOKEN_PATH.parent.mkdir(exist_ok=True)
+    tmp = TOKEN_PATH.with_suffix(".tmp")
+    tmp.unlink(missing_ok=True)
+    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as f:
+        f.write(json.dumps(data))
+    os.replace(tmp, TOKEN_PATH)
 
 
 def explain_error(error: str, description: str) -> str:
@@ -181,7 +189,7 @@ def publish(text: str) -> dict:
         raise LinkedInError(f"LinkedIn didn't publish the post (error {resp.status_code}): {resp.text[:200]}")
     if t.get("api_version") != version:
         t["api_version"] = version
-        TOKEN_PATH.write_text(json.dumps(t))
+        _save_token(t)
     urn = resp.headers.get("x-restli-id") or resp.headers.get("x-linkedin-id") or ""
     entry = {"time": datetime.now().strftime("%Y-%m-%d %H:%M"), "text": text, "urn": urn,
              "url": f"https://www.linkedin.com/feed/update/{urn}/" if urn else ""}

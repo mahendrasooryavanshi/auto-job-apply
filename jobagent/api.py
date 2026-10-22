@@ -2,6 +2,7 @@
 import base64
 import json
 import logging
+import re
 import secrets
 import threading
 import time
@@ -22,7 +23,7 @@ from .finder import has_job_source
 from .lock import Busy, agent_lock
 from . import agent_tools, assistant, hr, linkedin_account, linkedin_import, profile, settings, voice
 from .activity import external_run, friendly_error, get_progress, record, recent, set_progress
-from .sheet import Tracker
+from .sheet import SheetOpen, Tracker, first_email, split_emails
 
 log = logging.getLogger("jobagent")
 app = FastAPI(title="Job Agent")
@@ -125,9 +126,15 @@ def _decode_cursor(cursor: str) -> list | None:
 
 
 SEARCH_FIELDS = ("Company", "Role", "Location", "Tech Stack", "Source", "Recruiter Email", "Notes")
+def _pct(value) -> float:
+    """Match % as a number; tolerates "85%", "85.5" and hand-typed junk."""
+    m = re.search(r"\d+(?:\.\d+)?", str(value or ""))
+    return float(m.group()) if m else 0.0
+
+
 SORTS = {   # every sort ends with the row id, so the order is total and a cursor can resume exactly
     "newest": lambda n, r: [0, n],
-    "match": lambda n, r: [int(r.get("Match %") or 0), n],
+    "match": lambda n, r: [_pct(r.get("Match %")), n],
     "posted": lambda n, r: [str(r.get("Posted Date") or "")[:10], n],
 }
 
@@ -152,7 +159,7 @@ def jobs_page(status: str = "All", q: str = "", limit: int = 25, cursor: str = "
             continue
         if source != "all" and _source_kind(row["Source"]) != source:
             continue
-        if min_match and int(row.get("Match %") or 0) < min_match:
+        if min_match and _pct(row.get("Match %")) < min_match:
             continue
         if oldest and str(row.get("Posted Date") or "")[:10] < oldest:
             continue
@@ -165,7 +172,10 @@ def jobs_page(status: str = "All", q: str = "", limit: int = 25, cursor: str = "
         matches.append((key_of(row_num, row), row_num, row))
     matches.sort(key=lambda m: m[0], reverse=True)
     after = _decode_cursor(cursor)
-    rest = [m for m in matches if after is None or m[0] < after]
+    try:
+        rest = [m for m in matches if after is None or m[0] < after]
+    except TypeError:   # cursor made for another sort order
+        raise HTTPException(400, "Invalid page cursor; reload the list")
     page = rest[:limit]
     return {
         "items": [{"id": n, **{k: ("" if v is None else v) for k, v in r.items()}} for _, n, r in page],
@@ -194,15 +204,27 @@ def _apply_update(tracker: Tracker, row_num: int, upd: JobUpdate) -> dict:
     rows = dict(tracker.rows())
     if row_num not in rows:
         raise HTTPException(404, "Job not found")
-    if rows[row_num]["Status"] == "Emailed":
+    row = rows[row_num]
+    if row["Status"] == "Emailed":
         raise HTTPException(400, "This job was already emailed and can't be changed")
     fields = {col: getattr(upd, key) for key, col in EDITABLE.items() if getattr(upd, key) is not None}
+    if "Recruiter Email" in fields:
+        emails = split_emails(fields["Recruiter Email"])
+        bad = next((e for e in emails if not hr.EMAIL_RE.match(e)), None)
+        if bad:
+            raise HTTPException(400, f"“{bad}” isn't a valid email address")
+        fields["Recruiter Email"] = ", ".join(emails)
     if upd.status is not None:
         if upd.status not in USER_STATUSES:
             raise HTTPException(400, f"Status must be one of {sorted(USER_STATUSES)}")
+        if row["Status"] == "Replied":
+            raise HTTPException(400, "This recruiter already replied, so the status can't be changed")
+        if row["Status"] == "Failed" and upd.status in ("Approved", "Drafted") \
+                and first_email(fields.get("Recruiter Email", row["Recruiter Email"])) == first_email(row["Recruiter Email"]):
+            raise HTTPException(400, "The email to this recruiter failed. Change the recruiter email before sending again")
         if upd.status == "Applied":
             fields["Notes"] = " · ".join(x for x in (rows[row_num].get("Notes") or "", f"Applied on site {datetime.now():%Y-%m-%d}") if x)
-        if upd.status == "Approved" and not (fields.get("Recruiter Email") or rows[row_num]["Recruiter Email"]):
+        if upd.status == "Approved" and not fields.get("Recruiter Email", row["Recruiter Email"]):
             raise HTTPException(400, "Add a recruiter email before approving")
         fields["Status"] = upd.status
     tracker.update(row_num, **fields)
@@ -224,7 +246,7 @@ def update_job(row_num: int, upd: JobUpdate):
             tracker = _tracker()
             row = _apply_update(tracker, row_num, upd)
             tracker.save()
-    except Busy as e:
+    except (Busy, SheetOpen) as e:
         raise HTTPException(409, str(e))
     if upd.status in VERB:
         what = "the email for" if upd.status == "Approved" else ""
@@ -252,7 +274,7 @@ def bulk_status(req: BulkStatus):
                 except HTTPException as e:
                     skipped.append({"id": row_num, "reason": e.detail})
             tracker.save()
-    except Busy as e:
+    except (Busy, SheetOpen) as e:
         raise HTTPException(409, str(e))
     updated = len(req.ids) - len(skipped)
     if updated and req.status in VERB:
@@ -406,6 +428,11 @@ def hr_bulk(req: HRBulk):
             for i, row_num in enumerate(req.ids):
                 sheet.check(row_num, req.emails[i] if req.emails else None)
             rows = dict(sheet.rows())
+            if req.action == "delete":
+                emailed = sum(_hr_emailed(rows[n]) for n in set(req.ids) & set(rows))
+                if emailed:
+                    raise HTTPException(409, f"{emailed} of the selected contacts {'was' if emailed == 1 else 'were'} already emailed. "
+                                             "They stay in the list so they're never emailed twice; unselect them and try again.")
             # Highest rows first, so deleting one doesn't shift the row numbers of the others
             for row_num in sorted(set(req.ids) & set(rows), reverse=True):
                 status = rows[row_num]["Status"]
@@ -425,13 +452,20 @@ def hr_bulk(req: HRBulk):
     return {"changed": changed}
 
 
+def _hr_emailed(row: dict) -> bool:
+    return row["Status"] in ("Emailed", "Replied") or bool(row["Sent On"])
+
+
 @app.delete("/api/hr/{row_num}")
 def hr_delete(row_num: int):
     try:
         with agent_lock("hr", wait=5):
             sheet = hr.HRSheet()
-            if row_num not in dict(sheet.rows()):
+            row = dict(sheet.rows()).get(row_num)
+            if row is None:
                 raise HTTPException(404, "Contact not found")
+            if _hr_emailed(row):
+                raise HTTPException(409, "This person was already emailed. They stay in the list so they're never emailed twice.")
             sheet.delete(row_num)
             sheet.save()
     except (Busy, hr.SheetOpen) as e:

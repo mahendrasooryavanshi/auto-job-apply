@@ -6,6 +6,7 @@ LinkedIn is never logged into: we only read Google results and, when the snippet
 the post's public page.
 """
 import html
+import json
 import logging
 import re
 import time
@@ -13,7 +14,7 @@ from datetime import date, datetime, timedelta
 
 import requests
 
-from .finder import _problem, _row
+from .finder import _problem, _redact, _row
 
 log = logging.getLogger(__name__)
 
@@ -81,12 +82,17 @@ def _post_text(url: str) -> str:
         return ""
     if resp.status_code != 200:
         return ""
-    for pattern in (r'"articleBody"\s*:\s*"(.*?)"\s*[,}]',
+    for pattern in (r'"articleBody"\s*:\s*"((?:[^"\\]|\\.)*)"',
                     r'<meta[^>]+property="og:description"[^>]+content="([^"]*)"',
                     r'<meta[^>]+name="description"[^>]+content="([^"]*)"'):
         m = re.search(pattern, resp.text, re.S)
         if m:
-            text = m.group(1).encode().decode("unicode_escape", errors="ignore") if "articleBody" in pattern else m.group(1)
+            text = m.group(1)
+            if "articleBody" in pattern:
+                try:
+                    text = json.loads(f'"{text}"', strict=False)
+                except ValueError:
+                    pass
             return html.unescape(text)
     return ""
 
@@ -110,8 +116,8 @@ def search_posts(cfg: dict) -> list[dict]:
             try:
                 results = search(key, _query(role, location), s["posted_within_days"])
             except requests.RequestException as e:
-                log.warning("LinkedIn post search failed for %s/%s: %s", role, location, e)
-                _problem("LinkedIn posts", role, location, e)
+                log.warning("LinkedIn post search failed for %s/%s: %s", role, location, _redact(e, key))
+                _problem("LinkedIn posts", role, location, e, key)
                 continue
             for r in results:
                 link = (r.get("link") or "").split("?")[0]

@@ -1,6 +1,7 @@
 """Excel tracker: one row per job, deduplicated by job link."""
 import os
 import re
+import subprocess
 from datetime import date
 from pathlib import Path
 
@@ -24,8 +25,25 @@ def same_job_key(job: dict) -> tuple[str, str]:
     return norm(job.get("Company")), norm(job.get("Role"))
 
 
+def split_emails(value) -> list[str]:
+    return [e for e in re.split(r"[,;\s]+", str(value or "")) if e]
+
+
 def first_email(value) -> str:
-    return str(value or "").split(",")[0].strip().lower()
+    return (split_emails(value) or [""])[0].lower()
+
+
+class SheetOpen(RuntimeError):
+    """The sheet is open in LibreOffice/Excel; writing now would lose the user's edits."""
+
+
+def open_in_spreadsheet(path: Path) -> bool:
+    path = Path(path)
+    locks = [path.parent / f".~lock.{path.name}#", path.parent / f"~${path.name}"]
+    if not any(l.exists() for l in locks):
+        return False
+    # A lock left behind by a crashed LibreOffice shouldn't block the agent forever
+    return subprocess.run(["pgrep", "-f", "soffice"], capture_output=True).returncode == 0
 
 
 class Tracker:
@@ -99,7 +117,10 @@ class Tracker:
                 out.setdefault(email, row_num)
         return out
 
-    def save(self) -> None:
+    def save(self, force: bool = False) -> None:
+        """force: write even if the file is open elsewhere (only to record an email that already went out)."""
+        if not force and open_in_spreadsheet(self.path):
+            raise SheetOpen(f"{self.path.name} is open in LibreOffice/Excel. Save and close it there first.")
         # Write to a temp file and swap it in, so readers never see a half-written sheet
         tmp = self.path.with_suffix(".tmp.xlsx")
         self.wb.save(tmp)

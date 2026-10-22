@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api.js";
 import { Field, Icon } from "../components.jsx";
+import { safeUrl } from "../utils.js";
 
 const KIND_LABELS = {
   open_to_work: "I'm open to work",
@@ -306,7 +307,7 @@ export default function LinkedIn({ notify }) {
             {status.posts.map((p) => (
               <li key={p.time + p.urn}>
                 <span className="list-main"><strong>{p.text.split("\n")[0]}</strong><small>{p.time}</small></span>
-                {p.url && <a className="btn btn-sm" href={p.url} target="_blank" rel="noreferrer">View ↗</a>}
+                {safeUrl(p.url) && <a className="btn btn-sm" href={safeUrl(p.url)} target="_blank" rel="noreferrer">View ↗</a>}
               </li>
             ))}
           </ul>
@@ -323,7 +324,7 @@ export default function LinkedIn({ notify }) {
             {status.saved_posts.map((p) => (
               <li key={p.url}>
                 <span className="list-main"><strong>{p.text || p.url.replace(/^https?:\/\/(www\.)?/, "")}</strong><small>{p.date}</small></span>
-                <a className="btn btn-sm" href={p.url} target="_blank" rel="noreferrer">Open ↗</a>
+                <a className="btn btn-sm" href={safeUrl(p.url)} target="_blank" rel="noreferrer">Open ↗</a>
               </li>
             ))}
           </ul>

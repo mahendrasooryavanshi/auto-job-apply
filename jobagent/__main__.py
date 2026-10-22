@@ -22,7 +22,7 @@ from .inbox import check_inbox
 from .lock import agent_lock
 from .mailer import Mailer
 from .matcher import reject_reason, score
-from .sheet import MAX_CELL, Tracker, first_email, same_job_key
+from .sheet import MAX_CELL, SheetOpen, Tracker, first_email, open_in_spreadsheet, same_job_key
 from .writer import EmailWriter, follow_up_email
 
 log = logging.getLogger("jobagent")
@@ -96,7 +96,7 @@ def _find(cfg: dict) -> str:
         tracker.add(job)
         same_jobs.add(key)
         added += 1
-    tracker.save()
+    tracker.save(force=True)   # no emails sent here, so a stale open copy can only drop new finds
     msg = f"Fetched {len(jobs)} jobs, filtered out {filtered}, added {added} new matches, drafted {drafted} emails"
     log.info(msg)
     title = f"Found {added} new job{'s' if added != 1 else ''}" if added else "No new jobs this time"
@@ -114,25 +114,29 @@ def cmd_send(cfg: dict) -> str:
         return _send(cfg)
 
 
-def _update_from_inbox(cfg: dict) -> str:
+def _update_from_inbox(cfg: dict) -> tuple[str, bool]:
     """Mark job rows Replied or Failed (bounced) from Gmail. Never fatal: sending goes on without it.
-    Gmail is read without holding the sheet lock, so the dashboard stays usable meanwhile."""
+    Gmail is read without holding the sheet lock, so the dashboard stays usable meanwhile.
+    Returns (note, ok); ok is False if replies couldn't be checked or recorded (follow-ups must wait)."""
     with agent_lock("jobs"):
         contacts = {first_email(r["Recruiter Email"]): str(r["Email Sent On"])
                     for _, r in Tracker(cfg["sheet_path"]).rows("Emailed") if r["Email Sent On"]}
     if not contacts:
-        return ""
+        return "", True
     env = cfg["env"]
     try:
         replies, bounced = check_inbox(env["GMAIL_ADDRESS"], env["GMAIL_APP_PASSWORD"], contacts)
     except Exception as e:
         log.warning("Couldn't check Gmail for replies: %s", e)
         record("problem", "Couldn't check Gmail for replies", friendly_error(e))
-        return ""
+        return "", False
     if not (replies or bounced):
-        return ""
+        return "", True
     with agent_lock("jobs"):
         tracker = Tracker(cfg["sheet_path"])
+        if open_in_spreadsheet(tracker.path):
+            record("problem", "Couldn't record replies", "Your jobs sheet is open in LibreOffice/Excel. Close it; follow-ups wait until then.")
+            return "", False
         for row_num, r in tracker.rows("Emailed"):
             email = first_email(r["Recruiter Email"])
             if email in replies:
@@ -143,12 +147,12 @@ def _update_from_inbox(cfg: dict) -> str:
                 record("bounce", f"Email to {_who(r)} bounced", bounced[email].removeprefix("Bounced: ").capitalize(), row_num)
         tracker.save()
     log.info("Inbox: %d replies, %d bounced", len(replies), len(bounced))
-    return f"{len(replies)} new replies, " if replies else ""
+    return (f"{len(replies)} new replies, " if replies else ""), True
 
 
 def _send(cfg: dict) -> str:
     """Job emails first, then the HR outreach list; both share one daily limit."""
-    inbox_note = _update_from_inbox(cfg)
+    inbox_note, replies_ok = _update_from_inbox(cfg)
     with agent_lock("jobs"):
         tracker = Tracker(cfg["sheet_path"])
         jobs_today = tracker.sent_today()
@@ -160,7 +164,7 @@ def _send(cfg: dict) -> str:
         emailed |= {r["HR Email"].lower() for _, r in hr_sheet.rows() if r["Status"] in ("Emailed", "Replied")}
     remaining = cfg["email"]["daily_limit"] - jobs_today - hr_today
 
-    sent, followed, skipped, remaining = _send_jobs(cfg, remaining, emailed)
+    sent, followed, skipped, remaining = _send_jobs(cfg, remaining, emailed, follow_ups=replies_ok)
     hr_sent, hr_followed = send_hr(cfg, remaining, emailed)
     set_progress("")
     if not (sent or followed or skipped or hr_sent or hr_followed):
@@ -172,10 +176,11 @@ def _send(cfg: dict) -> str:
     return msg
 
 
-def _send_jobs(cfg: dict, remaining: int, emailed: set[str]) -> tuple[int, int, int, int]:
+def _send_jobs(cfg: dict, remaining: int, emailed: set[str], follow_ups: bool = True) -> tuple[int, int, int, int]:
     env, ecfg = cfg["env"], cfg["email"]
     send_statuses = ("Approved", "Drafted") if ecfg["auto_send"] else ("Approved",)
-    follow_days = int(ecfg.get("follow_up_days") or 0)
+    # Without knowing who replied, a follow-up could go to someone who already answered
+    follow_days = int(ecfg.get("follow_up_days") or 0) if follow_ups else 0
     cutoff = (datetime.now() - timedelta(days=follow_days)).strftime("%Y-%m-%d %H:%M")
     with agent_lock("jobs"):
         tracker = Tracker(cfg["sheet_path"])
@@ -194,6 +199,10 @@ def _send_jobs(cfg: dict, remaining: int, emailed: set[str]) -> tuple[int, int, 
             with agent_lock("jobs"):
                 # Re-read the row: you may have unapproved, skipped or edited it while earlier emails went out
                 tracker = Tracker(cfg["sheet_path"])
+                if open_in_spreadsheet(tracker.path):
+                    # Without saving "Emailed" we'd email them again next time, so stop instead
+                    record("problem", "Paused sending job emails", "Your jobs sheet is open in LibreOffice/Excel. Save and close it, then send again.")
+                    break
                 row_num = tracker.row_of(link)
                 row = dict(tracker.rows()).get(row_num) if row_num else None
                 if not row or (kind == "new" and row["Status"] not in send_statuses) \
@@ -226,7 +235,14 @@ def _send_jobs(cfg: dict, remaining: int, emailed: set[str]) -> tuple[int, int, 
                         tracker.update(row_num, Status="Failed", Notes=friendly_error(e))
                     log.warning("Failed to send %s email to %s: %s", kind, to, e)
                     record("problem", f"Couldn't email {_who(row)}", friendly_error(e), row_num)
-                tracker.save()
+                try:
+                    tracker.save()
+                except SheetOpen:
+                    # Opened mid-send: the email went out, so record it anyway and stop
+                    tracker.save(force=True)
+                    record("problem", "Paused sending job emails", "Your jobs sheet was opened in LibreOffice/Excel while sending. "
+                           "Close it without saving (the agent updated it), then send again.")
+                    break
                 emailed_now = True
             if emailed_now and remaining > 0 and i < len(queue) - 1:
                 wait_between(ecfg["delay_seconds"], f"Job emails: sent {sent + followed} of {total}")
@@ -253,7 +269,7 @@ def cmd_recheck(cfg: dict) -> str:
             if reason:
                 tracker.update(row_num, Status="Skipped", Notes=f"Filtered: {reason}")
                 skipped += 1
-        tracker.save()
+        tracker.save(force=True)
     msg = f"Re-checked saved jobs: {skipped} no longer match your filters"
     log.info(msg)
     record("filter", msg, "They're marked Skipped; use Restore on a job to bring it back" if skipped else "")

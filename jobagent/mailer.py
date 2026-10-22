@@ -1,9 +1,18 @@
 """Send emails through Gmail SMTP with the resume attached."""
 import mimetypes
 import smtplib
+import time
 from email.message import EmailMessage
 from email.utils import make_msgid
 from pathlib import Path
+
+
+class _SMTP(smtplib.SMTP_SSL):
+    data_started = False   # once DATA went out, the message may have been delivered
+
+    def data(self, msg):
+        self.data_started = True
+        return super().data(msg)
 
 
 class Mailer:
@@ -17,8 +26,17 @@ class Mailer:
         self.smtp = None
 
     def _connect(self) -> None:
-        self.smtp = smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=60)
-        self.smtp.login(self.address, self.password)
+        for attempt in range(2):   # one retry for network hiccups; a rejected password won't fix itself
+            try:
+                self.smtp = _SMTP("smtp.gmail.com", 465, timeout=60)
+                self.smtp.login(self.address, self.password)
+                return
+            except smtplib.SMTPAuthenticationError:
+                raise
+            except OSError:
+                if attempt:
+                    raise
+                time.sleep(5)
 
     def __enter__(self):
         self._connect()
@@ -52,9 +70,13 @@ class Mailer:
         # Gmail closes idle connections, e.g. during a long gap between emails: reconnect first
         if not self._alive():
             self._connect()
+        self.smtp.data_started = False
         try:
             self.smtp.send_message(msg)
         except smtplib.SMTPServerDisconnected:
+            if self.smtp.data_started:   # resending could deliver it twice
+                raise RuntimeError(f"Gmail dropped the connection while sending to {to}; it may have been delivered. "
+                                   "Check your Sent folder before sending again.")
             self._connect()
             self.smtp.send_message(msg)
         return msg["Message-ID"]

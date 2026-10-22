@@ -42,11 +42,11 @@ def search_jobspipe(cfg: dict) -> list[dict]:
             record("problem", "JobsPipe credits used up", "Your free JobsPipe credits are finished for now; other sources keep working.")
             return []
         resp.raise_for_status()
-    except requests.RequestException as e:
+        data = resp.json()
+    except (requests.RequestException, ValueError) as e:
         log.warning("JobsPipe search failed: %s", e)
         _problem("JobsPipe", ", ".join(s["roles"]), ", ".join(s["locations"]), e)
         return []
-    data = resp.json()
     meta = data.get("metadata", {})
     jobs, ghosts = [], 0
     for j in data.get("data", []):

@@ -78,8 +78,15 @@ def record(kind: str, title: str, detail: str = "", job_id: int | None = None) -
 def recent(limit: int = 300) -> list[dict]:
     if not FEED_PATH.exists():
         return []
-    lines = FEED_PATH.read_text().splitlines()[-limit:]
-    return [json.loads(l) for l in reversed(lines) if l.strip()]
+    out = []
+    for l in reversed(FEED_PATH.read_text(errors="replace").splitlines()[-limit:]):
+        try:
+            entry = json.loads(l)
+        except ValueError:   # blank, or cut short by a crash mid-write
+            continue
+        if isinstance(entry, dict):
+            out.append(entry)
+    return out
 
 
 def friendly_error(e: Exception) -> str:

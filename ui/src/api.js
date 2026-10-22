@@ -63,8 +63,8 @@ export const api = {
   },
   confirmAction: (id, approve, language = "en") =>
     request("/assistant/confirm", { method: "POST", body: JSON.stringify({ id, approve, language }) }),
-  assistant: (messages, jobId, mode, language = "en") =>
-    request("/assistant/chat", { method: "POST", body: JSON.stringify({ messages, job_id: jobId, mode, language }) }),
+  assistant: (messages, jobId, mode, language = "en", signal) =>
+    request("/assistant/chat", { method: "POST", body: JSON.stringify({ messages, job_id: jobId, mode, language }), signal }),
   testGmail: () => request("/settings/test-gmail", { method: "POST" }),
   uploadResume: (file) =>
     request(`/settings/resume?filename=${encodeURIComponent(file.name)}`, {

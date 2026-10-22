@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "./api.js";
 import { CompanyAvatar, Icon, MatchPill, SourceTag, StatusBadge, timeAgo } from "./components.jsx";
 import JobDescription from "./JobDescription.jsx";
-import { applicantsOf } from "./utils.js";
+import { applicantsOf, safeUrl } from "./utils.js";
 
 const fieldsFrom = (job) => ({
   recruiter_email: job["Recruiter Email"],
@@ -92,7 +92,7 @@ export default function JobPanel({ job, onClose, onSaved, notify, busy, onAsk })
 
         <div className="js-actions">
           {job["Job Link"] && (
-            <a className="btn btn-primary" href={job["Job Link"]} target="_blank" rel="noreferrer">
+            <a className="btn btn-primary" href={safeUrl(job["Job Link"])} target="_blank" rel="noreferrer">
               <Icon name="link" size={15} /> Apply on {siteName(job["Job Link"])}
             </a>
           )}

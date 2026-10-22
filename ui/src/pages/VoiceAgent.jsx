@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api.js";
 import { Icon, Toggle } from "../components.jsx";
+import { safeUrl } from "../utils.js";
 import { streamSpeak, unlockAudio } from "../voicePlayer.js";
 import { BROWSER_VOICE, Recognition, loadPref, pickVoice, savePref } from "./VoiceInterview.jsx";
 
@@ -74,22 +75,37 @@ export default function VoiceAgent({ jobId, notify, onOpenJob, onChanged }) {
   const silenceRef = useRef(null);
   const heardRef = useRef("");
   const audioRef = useRef(null);
+  const aliveRef = useRef(true);          // false once the page is gone: nothing may speak or listen after that
+  const speechRef = useRef(0);            // bumped to cancel whatever is being prepared or spoken
+  const speechAbortRef = useRef(null);
+  const chatAbortRef = useRef(null);
   const messagesRef = useRef(messages);
   const pendingRef = useRef(pending);
   messagesRef.current = messages;
   pendingRef.current = pending;
+  // Callbacks from the mic and from finished requests run long after the render that made them: read current values here
+  const live = useRef({});
+  live.current = { lang, jobId, handsFree, muted, voiceName, notify, onOpenJob, onChanged };
   const setHandsFree = (v) => { setHandsFreeState(v); savePref("agentHandsFree", v); };
   const setVoiceName = (v) => { setVoiceNameState(v); savePref("name", v); };
 
   useEffect(() => {
+    aliveRef.current = true;
     api.voices().then((d) => setVoices(d.voices)).catch(() => {});
-    return () => stopAll();
+    return () => { aliveRef.current = false; stopAll(); };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function stopSpeaking() {
+    speechRef.current += 1;
+    speechAbortRef.current?.abort();
+    window.speechSynthesis?.cancel();
+    audioRef.current?.pause();
+  }
 
   function stopAll() {
     stopListening();
-    window.speechSynthesis?.cancel();
-    audioRef.current?.pause();
+    stopSpeaking();
+    chatAbortRef.current?.abort();
   }
 
   const browserSpeak = (text, then) => {
@@ -112,47 +128,61 @@ export default function VoiceAgent({ jobId, notify, onOpenJob, onChanged }) {
   };
 
   // Speak a reply, then (hands-free) listen for the next command
-  const say = useCallback(async (text) => {
-    const after = () => (handsFree && Recognition ? startListening() : setPhase("idle"));
+  async function say(text) {
+    if (!aliveRef.current) return;
+    stopSpeaking();
+    const my = speechRef.current;
+    const current = () => aliveRef.current && my === speechRef.current;
+    const after = () => {
+      if (!current()) return;
+      if (live.current.handsFree && Recognition) startListening(); else setPhase("idle");
+    };
     const spoken = clean(text);
-    if (muted || !spoken) { after(); return; }
-    if (voiceName !== BROWSER_VOICE) {
+    if (live.current.muted || !spoken) { after(); return; }
+    if (live.current.voiceName !== BROWSER_VOICE) {
+      const abort = new AbortController();
+      speechAbortRef.current = abort;
       try {
         setPhase("preparing");
-        audioRef.current?.pause();
-        const playing = await streamSpeak(spoken, { voice: voiceName, indianAccent: true, persona: "assistant" });
+        const playing = await streamSpeak(spoken, { voice: live.current.voiceName, indianAccent: true, persona: "assistant", signal: abort.signal });
+        if (!current()) { playing.pause(); return; }
         audioRef.current = playing;
         setPhase("speaking");
         playing.done.then((stopped) => { if (!stopped) after(); });
         return;
-      } catch { /* fall back to the browser voice */ }
+      } catch {
+        if (!current()) return;   // stopped while preparing
+        /* fall back to the browser voice */
+      }
     }
     browserSpeak(spoken, after);
-  }, [muted, voiceName, handsFree]); // eslint-disable-line react-hooks/exhaustive-deps
+  }
 
   function startListening() {
-    if (!Recognition) { notify("Voice commands need Google Chrome. You can type below.", "error"); setPhase("idle"); return; }
-    window.speechSynthesis?.cancel();
-    audioRef.current?.pause();
+    if (!aliveRef.current) return;
+    if (!Recognition) { live.current.notify("Voice commands need Google Chrome. You can type below.", "error"); setPhase("idle"); return; }
+    stopSpeaking();     // also makes the cancelled speech's "finished" callback a no-op, so it can't start a second mic
+    stopListening();    // never two recognizers at once
     heardRef.current = "";
     setHeard("");
     listeningRef.current = true;
     setPhase("listening");
     const rec = new Recognition();
-    rec.lang = (LANGUAGES[lang] || LANGUAGES.en).listen;
+    rec.lang = (LANGUAGES[live.current.lang] || LANGUAGES.en).listen;
     rec.continuous = true;
     rec.interimResults = true;
     rec.onresult = (e) => {
-      let live = "";
+      if (recRef.current !== rec) return;
+      let partial = "";
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const r = e.results[i];
         if (r.isFinal) heardRef.current = `${heardRef.current} ${r[0].transcript}`.trim();
-        else live += r[0].transcript;
+        else partial += r[0].transcript;
       }
-      setHeard(`${heardRef.current} ${live}`.trim());
+      setHeard(`${heardRef.current} ${partial}`.trim());
       clearTimeout(silenceRef.current);
       silenceRef.current = setTimeout(() => {
-        const text = `${heardRef.current} ${live}`.trim();
+        const text = `${heardRef.current} ${partial}`.trim();
         if (text) { stopListening(); handle(text); }
       }, SILENCE_MS);
     };
@@ -160,10 +190,12 @@ export default function VoiceAgent({ jobId, notify, onOpenJob, onChanged }) {
       if (e.error === "not-allowed" || e.error === "service-not-allowed") {
         listeningRef.current = false;
         setPhase("idle");
-        notify("Microphone blocked. Click the 🔒 icon in the address bar and allow the microphone.", "error");
+        live.current.notify("Microphone blocked. Click the 🔒 icon in the address bar and allow the microphone.", "error");
       }
     };
-    rec.onend = () => { if (listeningRef.current) { try { rec.start(); } catch { /* restarting */ } } };
+    rec.onend = () => {
+      if (listeningRef.current && aliveRef.current && recRef.current === rec) { try { rec.start(); } catch { /* restarting */ } }
+    };
     recRef.current = rec;
     try { rec.start(); } catch { /* already started */ }
   }
@@ -190,9 +222,9 @@ export default function VoiceAgent({ jobId, notify, onOpenJob, onChanged }) {
     if (saidText) append({ role: "user", content: saidText });
     setPhase("thinking");
     try {
-      const res = await api.confirmAction(action.id, approve, lang);
+      const res = await api.confirmAction(action.id, approve, live.current.lang);
       append({ role: "assistant", content: res.message, kind: res.done ? "done" : "cancelled" });
-      if (res.done) onChanged?.();
+      if (res.done) live.current.onChanged?.();
       say(res.message);
     } catch (e) {
       append({ role: "assistant", content: `That didn't work: ${e.message}`, kind: "error" });
@@ -201,6 +233,7 @@ export default function VoiceAgent({ jobId, notify, onOpenJob, onChanged }) {
   }
 
   async function handle(text) {
+    if (!aliveRef.current) return;
     setHeard("");
     const said = text.trim();
     if (!said) { setPhase("idle"); return; }
@@ -214,14 +247,19 @@ export default function VoiceAgent({ jobId, notify, onOpenJob, onChanged }) {
     }
     const next = append({ role: "user", content: said });
     setPhase("thinking");
+    const abort = new AbortController();
+    chatAbortRef.current = abort;
+    const { jobId: job, lang: language } = live.current;
     try {
-      const res = await api.assistant(next.map(({ role, content }) => ({ role, content })), jobId ? Number(jobId) : null, "agent", lang);
-      (res.ui || []).forEach((u) => { if (u.open_job) onOpenJob?.(u.open_job); });
+      const res = await api.assistant(next.map(({ role, content }) => ({ role, content })), job ? Number(job) : null, "agent", language, abort.signal);
+      if (abort.signal.aborted || !aliveRef.current) return;
+      (res.ui || []).forEach((u) => { if (u.open_job) live.current.onOpenJob?.(u.open_job); });
       append({ role: "assistant", content: res.reply, sources: res.sources, action: res.pending_action || null });
       if (res.pending_action) setPending(res.pending_action);
       say(res.reply);
     } catch (e) {
-      notify(e.message, "error");
+      if (abort.signal.aborted || !aliveRef.current) return;
+      live.current.notify(e.message, "error");
       setPhase("idle");
     }
   }
@@ -234,6 +272,13 @@ export default function VoiceAgent({ jobId, notify, onOpenJob, onChanged }) {
     messagesRef.current = [];
     saveThread([]);
     setPhase("idle");
+  }
+
+  function toggleMute() {
+    setMuted(!muted);
+    live.current.muted = !muted;
+    stopSpeaking();
+    if (phase === "preparing" || phase === "speaking") setPhase("idle");
   }
 
   const status = {
@@ -257,7 +302,7 @@ export default function VoiceAgent({ jobId, notify, onOpenJob, onChanged }) {
           {Object.keys(voices).map((name) => <option key={name} value={name}>{name}</option>)}
           <option value={BROWSER_VOICE}>Browser</option>
         </select>
-        <button className="btn btn-sm" onClick={() => { setMuted(!muted); window.speechSynthesis?.cancel(); audioRef.current?.pause(); }}>{muted ? "🔇 Unmute" : "🔊 Mute"}</button>
+        <button className="btn btn-sm" onClick={toggleMute}>{muted ? "🔇 Unmute" : "🔊 Mute"}</button>
         <button className="btn btn-sm btn-ghost" onClick={clear} disabled={!messages.length}>Clear</button>
       </div>
 
@@ -296,7 +341,7 @@ export default function VoiceAgent({ jobId, notify, onOpenJob, onChanged }) {
               <strong>{m.role === "user" ? "You" : "Assistant"}</strong> {clean(m.content)}
               {m.sources?.length > 0 && (
                 <span className="agent-sources">
-                  {m.sources.slice(0, 3).map((s) => <a key={s.url} href={s.url} target="_blank" rel="noreferrer">{(s.title || s.url).slice(0, 40)}</a>)}
+                  {m.sources.slice(0, 3).map((s) => <a key={s.url} href={safeUrl(s.url)} target="_blank" rel="noreferrer">{(s.title || s.url).slice(0, 40)}</a>)}
                 </span>
               )}
             </p>

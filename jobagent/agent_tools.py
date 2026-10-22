@@ -3,6 +3,8 @@
 Read tools run immediately. Action tools (anything that changes data or sends something) are only *requested* by the
 model: the server describes the request to the user and runs it solely after an explicit confirmation (see api.py).
 """
+import re
+
 from .config import load_config
 from .hr import HRSheet
 from .lock import agent_lock
@@ -49,6 +51,12 @@ READ_NAMES = {d["name"] for d in READ_DECLS}
 ACTION_NAMES = {d["name"] for d in ACTION_DECLS}
 
 
+def _int(value, default: int = 0) -> int:
+    """Lenient number from model-supplied args: 70, "70", "70%", 70.0; anything else -> default."""
+    m = re.search(r"-?\d+", str(value if value is not None else ""))
+    return int(m.group()) if m else default
+
+
 def _jobs() -> dict[int, dict]:
     with agent_lock("jobs"):
         return dict(Tracker(load_config()["sheet_path"]).rows())
@@ -64,7 +72,7 @@ def run_read(name: str, args: dict, ui: list) -> dict:
     if name == "list_jobs":
         status = STATUS_ALIASES.get(str(args.get("status") or "").lower().strip())
         words = str(args.get("query") or "").lower().split()
-        min_match = int(args.get("min_match") or 0)
+        min_match = _int(args.get("min_match"))
         found = []
         for n, r in _jobs().items():
             if status and r["Status"] != status:
@@ -76,17 +84,18 @@ def run_read(name: str, args: dict, ui: list) -> dict:
                 continue
             found.append((n, r))
         found.sort(key=lambda x: (int(x[1]["Match %"] or 0), str(x[1]["Posted Date"] or "")), reverse=True)
-        limit = max(1, min(int(args.get("limit") or 6), 15))
+        limit = max(1, min(_int(args.get("limit"), 6), 15))
         return {"total": len(found), "jobs": [_brief(n, r) for n, r in found[:limit]]}
     if name in ("job_details", "show_job"):
-        row = _jobs().get(int(args.get("job_id") or 0))
+        job_id = _int(args.get("job_id"))
+        row = _jobs().get(job_id)
         if not row:
             return {"error": "No job with that id"}
         if name == "show_job":
-            ui.append({"open_job": int(args["job_id"])})
+            ui.append({"open_job": job_id})
             return {"ok": True, "shown": f"{row['Role']} at {row['Company']}"}
         jd = str(row.get("Full JD") or row.get("Profile / JD Summary") or "")
-        return {**_brief(int(args["job_id"]), row), "salary": row["Budget"], "source": row["Source"], "link": row["Job Link"],
+        return {**_brief(job_id, row), "salary": row["Budget"], "source": row["Source"], "link": row["Job Link"],
                 "notes": row["Notes"], "description": jd[:3500]}
     if name == "pipeline_summary":
         rows = _jobs().values()
@@ -110,7 +119,7 @@ def run_read(name: str, args: dict, ui: list) -> dict:
 def describe(name: str, args: dict) -> tuple[str, list[str]]:
     """(one-line summary, detail lines) of a requested action, checked against current data. Raises ValueError if invalid."""
     if name in ("approve_job_email", "mark_applied", "skip_job"):
-        job_id = int(args.get("job_id") or 0)
+        job_id = _int(args.get("job_id"))
         row = _jobs().get(job_id)
         if not row:
             raise ValueError("I couldn't find that job")

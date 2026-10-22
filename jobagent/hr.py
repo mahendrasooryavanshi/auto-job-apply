@@ -8,7 +8,6 @@ import logging
 import os
 import re
 import string
-import subprocess
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -21,6 +20,7 @@ from .config import ROOT
 from .inbox import check_inbox
 from .lock import agent_lock
 from .mailer import Mailer
+from .sheet import SheetOpen, open_in_spreadsheet as _open_in_spreadsheet
 
 log = logging.getLogger(__name__)
 
@@ -116,15 +116,30 @@ def signature(cfg: dict) -> str:
     return "\n".join(lines)
 
 
-def render(row: dict, cfg: dict) -> tuple[str, str]:
+class _Blank(dict):
+    def __missing__(self, key):   # unknown {placeholder}: blank rather than KeyError
+        return ""
+
+
+def _fill(text: str, v: dict) -> str:
+    try:
+        return text.format_map(_Blank(v))
+    except (ValueError, IndexError, AttributeError):   # stray { } or {0}: show the template as typed
+        return text
+
+
+def templates(cfg: dict) -> tuple[str, str]:
     e = cfg["email"]
+    return e.get("hr_subject") or DEFAULT_SUBJECT, e.get("hr_body") or DEFAULT_BODY
+
+
+def render(row: dict, cfg: dict) -> tuple[str, str]:
     v = values_for(row, cfg)
-    subject = e.get("hr_subject") or DEFAULT_SUBJECT
-    body = e.get("hr_body") or DEFAULT_BODY
+    subject, body = templates(cfg)
     if not (row.get("Company") or "").strip():
         # Without a company, "role at your company" reads oddly in a subject line
         subject = re.sub(r"\s+(?:at|@|with)\s+\{company\}", "", subject)
-    return subject.format(**v).strip(), f"{body.format(**v).strip()}\n\n{signature(cfg)}"
+    return _fill(subject, v).strip(), f"{_fill(body, v).strip()}\n\n{signature(cfg)}"
 
 
 def follow_up(row: dict, cfg: dict) -> tuple[str, str]:
@@ -145,17 +160,8 @@ HEADER_ALIASES = {
 }
 
 
-class SheetOpen(RuntimeError):
-    """The HR sheet is open in LibreOffice/Excel; writing now would lose the user's edits."""
-
-
 def open_in_spreadsheet(path: Path | None = None) -> bool:
-    path = path or HR_PATH
-    locks = [path.parent / f".~lock.{path.name}#", path.parent / f"~${path.name}"]
-    if not any(l.exists() for l in locks):
-        return False
-    # A lock left behind by a crashed LibreOffice shouldn't block the agent forever
-    return subprocess.run(["pgrep", "-f", "soffice"], capture_output=True).returncode == 0
+    return _open_in_spreadsheet(path or HR_PATH)
 
 
 def _cell(v) -> str:
@@ -250,8 +256,9 @@ class HRSheet:
         today = date.today().isoformat()
         return sum(r[c].startswith(today) for _, r in self.rows() for c in ("Sent On", "Follow-up Sent On"))
 
-    def save(self) -> None:
-        if open_in_spreadsheet(self.path):
+    def save(self, force: bool = False) -> None:
+        """force: write even if the file is open elsewhere (only to record an email that already went out)."""
+        if not force and open_in_spreadsheet(self.path):
             raise SheetOpen("hr_contacts.xlsx is open in LibreOffice/Excel. Save and close it there first, "
                             "or make your changes there.")
         tmp = self.path.with_suffix(".tmp.xlsx")
@@ -292,8 +299,9 @@ def parse_contacts(filename: str, content: bytes) -> list[dict]:
     return out
 
 
-def check_replies(cfg: dict) -> int:
-    """Mark HR rows Replied / Failed (bounced). Gmail is read without holding the sheet lock."""
+def check_replies(cfg: dict) -> int | None:
+    """Mark HR rows Replied / Failed (bounced). Gmail is read without holding the sheet lock.
+    Returns None if replies couldn't be checked or recorded (follow-ups must wait)."""
     with agent_lock("hr"):
         contacts = {r["HR Email"].lower(): r["Sent On"] for _, r in HRSheet().rows("Emailed") if r["Sent On"]}
     if not contacts:
@@ -303,9 +311,11 @@ def check_replies(cfg: dict) -> int:
         replies, bounced = check_inbox(env["GMAIL_ADDRESS"], env["GMAIL_APP_PASSWORD"], contacts)
     except Exception as e:
         log.warning("Couldn't check Gmail for HR replies: %s", e)
+        return None
+    if not (replies or bounced):
         return 0
-    if not (replies or bounced) or open_in_spreadsheet():
-        return len(replies)
+    if open_in_spreadsheet():
+        return None
     with agent_lock("hr"):
         sheet = HRSheet()
         for row_num, r in sheet.rows("Emailed"):
@@ -334,9 +344,15 @@ def send_hr(cfg: dict, remaining: int, already_emailed: set[str]) -> tuple[int, 
         if waiting:
             record("problem", "Didn't email your HR list", "hr_contacts.xlsx is open in LibreOffice/Excel. Save and close it, then send again.")
         return 0, 0
-    check_replies(cfg)
+    try:
+        validate_template(*templates(cfg))
+    except TemplateError as e:
+        record("problem", "Didn't email your HR list", f"Fix your HR email template: {e}")
+        return 0, 0
+    # Without knowing who replied, a follow-up could go to someone who already answered
+    replies_ok = check_replies(cfg) is not None
     ecfg = cfg["email"]
-    follow_days = int(ecfg.get("follow_up_days") or 0)
+    follow_days = int(ecfg.get("follow_up_days") or 0) if replies_ok else 0
     cutoff = (datetime.now() - timedelta(days=follow_days)).strftime("%Y-%m-%d %H:%M")
     with agent_lock("hr"):
         sheet = HRSheet()
@@ -353,12 +369,12 @@ def send_hr(cfg: dict, remaining: int, already_emailed: set[str]) -> tuple[int, 
         for i, (kind, email) in enumerate(queue):
             if remaining <= 0:
                 break
-            if open_in_spreadsheet():
-                # Without saving "Emailed" we'd email them again next time, so stop instead
-                record("problem", "Paused emailing your HR list", "hr_contacts.xlsx was opened in LibreOffice/Excel. Save and close it, then send again.")
-                break
             emailed_now = False
             with agent_lock("hr"):
+                if open_in_spreadsheet():
+                    # Without saving "Emailed" we'd email them again next time, so stop instead
+                    record("problem", "Paused emailing your HR list", "hr_contacts.xlsx was opened in LibreOffice/Excel. Save and close it, then send again.")
+                    break
                 sheet = HRSheet()
                 found = _find(sheet, email, ("Ready",) if kind == "new" else ("Emailed",))
                 if not found or (kind == "follow-up" and found[1]["Follow-up Sent On"]):
@@ -391,7 +407,14 @@ def send_hr(cfg: dict, remaining: int, already_emailed: set[str]) -> tuple[int, 
                         sheet.update(row_num, Status="Failed", Notes=friendly_error(e))
                     record("problem", f"Couldn't email {who}", friendly_error(e))
                     log.warning("HR email to %s failed: %s", to, e)
-                sheet.save()
+                try:
+                    sheet.save()
+                except SheetOpen:
+                    # Opened mid-send: the email went out, so record it anyway and stop
+                    sheet.save(force=True)
+                    record("problem", "Paused emailing your HR list", "hr_contacts.xlsx was opened in LibreOffice/Excel while sending. "
+                           "Close it without saving (the agent updated it), then send again.")
+                    break
                 emailed_now = True
             if emailed_now and remaining > 0 and i < len(queue) - 1:
                 wait_between(ecfg["delay_seconds"], f"HR list: sent {sent + followed} of {total}")

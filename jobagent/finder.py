@@ -8,9 +8,18 @@ log = logging.getLogger(__name__)
 JSEARCH_MAX_CALLS = 4
 
 
-def _problem(source: str, role: str, location: str, e: Exception) -> None:
+def _redact(e, *secrets) -> str:
+    """Error text with API keys (which some services take in the URL) replaced by ***."""
+    text = str(e)
+    for k in secrets:
+        if k:
+            text = text.replace(k, "***")
+    return text
+
+
+def _problem(source: str, role: str, location: str, e: Exception, *secrets) -> None:
     from .activity import friendly_error, record
-    record("problem", f"Couldn't search {source} for “{role}” in {location}", friendly_error(e))
+    record("problem", f"Couldn't search {source} for “{role}” in {location}", _redact(friendly_error(e), *secrets))
 
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 # Indian mobile numbers as published in the post, e.g. +91 98765 43210 / 9876543210
@@ -109,17 +118,17 @@ def find_jobs(cfg: dict, known_links: set[str] = frozenset()) -> list[dict]:
     if not has_job_source(env, s):
         raise RuntimeError("No job source is on. Turn on LinkedIn jobs or add a JSearch / Adzuna / Serper key in Settings.")
     jobs = []
-    if env["JOBSPIPE_API_KEY"]:
-        jobs += search_jobspipe(cfg)
-    if s.get("company_jobs", True):
+    sources = [("JobsPipe", env["JOBSPIPE_API_KEY"], lambda: search_jobspipe(cfg)),
+               ("Target companies", s.get("company_jobs", True), lambda: search_companies(cfg)),
+               ("LinkedIn jobs", s.get("linkedin_jobs", True), lambda: search_linkedin_jobs(cfg, set(known_links))),
+               ("LinkedIn posts", env["SERPER_API_KEY"] or env["SERPAPI_KEY"], lambda: search_posts(cfg))]
+    for name, on, search in sources:
+        if not on:
+            continue
         try:
-            jobs += search_companies(cfg)
+            jobs += search()
         except Exception as e:   # one source failing must not stop the others
-            log.warning("Target companies search failed: %s", e)
-    if s.get("linkedin_jobs", True):
-        jobs += search_linkedin_jobs(cfg, set(known_links))
-    if env["SERPER_API_KEY"] or env["SERPAPI_KEY"]:
-        jobs += search_posts(cfg)
+            log.warning("%s search failed: %s", name, _redact(e, env["SERPAPI_KEY"], env["ADZUNA_APP_KEY"]))
     jsearch_calls = 0
     for role in s["roles"]:
         for location in s["locations"]:
@@ -135,6 +144,6 @@ def find_jobs(cfg: dict, known_links: set[str] = frozenset()) -> list[dict]:
                 try:
                     jobs += search_adzuna(env["ADZUNA_APP_ID"], env["ADZUNA_APP_KEY"], role, location, s["posted_within_days"])
                 except requests.RequestException as e:
-                    log.warning("Adzuna failed for %s/%s: %s", role, location, e)
-                    _problem("Adzuna", role, location, e)
+                    log.warning("Adzuna failed for %s/%s: %s", role, location, _redact(e, env["ADZUNA_APP_KEY"]))
+                    _problem("Adzuna", role, location, e, env["ADZUNA_APP_KEY"])
     return [j for j in jobs if j["Job Link"]]

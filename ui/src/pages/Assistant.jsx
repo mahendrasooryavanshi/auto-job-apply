@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api.js";
 import { CompanyAvatar, Icon } from "../components.jsx";
 import Markdown from "../Markdown.jsx";
+import { safeUrl } from "../utils.js";
 import VoiceAgent from "./VoiceAgent.jsx";
 import VoiceInterview from "./VoiceInterview.jsx";
 
@@ -70,9 +71,11 @@ export default function Assistant({ jobs, notify, initialJobId, onOpenJob, onCha
   const [thinking, setThinking] = useState(false);
   const endRef = useRef();
   const inputRef = useRef();
+  const keyRef = useRef(key);
+  keyRef.current = key;
 
   useEffect(() => { if (initialJobId) setJobId(initialJobId); }, [initialJobId]);
-  useEffect(() => { setMessages(loadThread(key)); }, [key]);
+  useEffect(() => { setMessages(loadThread(key)); setFailed(false); }, [key]);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" }); }, [messages, thinking]);
 
   const job = useMemo(() => jobs.find((j) => String(j.id) === String(jobId)), [jobs, jobId]);
@@ -116,16 +119,16 @@ export default function Assistant({ jobs, notify, initialJobId, onOpenJob, onCha
     saveThread(key, next);
     setInput("");
     setThinking(true);
+    const sentKey = key;   // the reply belongs to this thread even if you switch job or mode while waiting
     try {
       const res = await api.assistant(next.map(({ role, content: c, files: f }) => ({ role, content: c, attachments: (f || []).map((x) => x.id) })),
         jobId ? Number(jobId) : null, mode);
       const done = [...next, { role: "assistant", content: res.reply, sources: res.sources }];
-      setMessages(done);
-      saveThread(key, done);
+      saveThread(sentKey, done);
+      if (keyRef.current === sentKey) setMessages(done);
     } catch (e) {
       notify(e.message, "error");
-      setMessages(next);
-      setFailed(true);
+      if (keyRef.current === sentKey) { setMessages(next); setFailed(true); }
     } finally {
       setThinking(false);
       inputRef.current?.focus();
@@ -193,7 +196,7 @@ export default function Assistant({ jobs, notify, initialJobId, onOpenJob, onCha
                       <div className="msg-sources">
                         <span>Sources</span>
                         {m.sources.map((s) => (
-                          <a key={s.url} href={s.url} target="_blank" rel="noreferrer" title={s.url}>{(s.title || s.url).slice(0, 50)}</a>
+                          <a key={s.url} href={safeUrl(s.url)} target="_blank" rel="noreferrer" title={s.url}>{(s.title || s.url).slice(0, 50)}</a>
                         ))}
                       </div>
                     )}

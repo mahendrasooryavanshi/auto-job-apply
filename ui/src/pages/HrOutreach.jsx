@@ -7,7 +7,9 @@ const fill = (text, values) => text.replace(/\{(\w+)\}/g, (m, k) => (k in values
 
 function ContactPanel({ row, onClose, onChanged, notify }) {
   const [form, setForm] = useState({ name: row["HR Name"], email: row["HR Email"], company: row.Company, role: row.Role, notes: row.Notes });
-  useEffect(() => setForm({ name: row["HR Name"], email: row["HR Email"], company: row.Company, role: row.Role, notes: row.Notes }), [row.id]);
+  // Row numbers shift when the Excel file is edited: start again when this panel now shows a different contact
+  useEffect(() => setForm({ name: row["HR Name"], email: row["HR Email"], company: row.Company, role: row.Role, notes: row.Notes }), [row.id, row["HR Email"]]);
+  const expect_email = row["HR Email"];   // the server refuses the change if this row now holds someone else
   const sent = row.Status === "Emailed" || row.Status === "Replied";
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
 
@@ -58,12 +60,12 @@ function ContactPanel({ row, onClose, onChanged, notify }) {
         </div>
 
         <div className="panel-actions">
-          <button className="btn btn-primary" onClick={() => act(() => api.hrUpdate(row.id, form), "Contact saved")}>Save</button>
+          <button className="btn btn-primary" onClick={() => act(() => api.hrUpdate(row.id, { ...form, expect_email }), "Contact saved")}>Save</button>
           {!sent && (row.Status === "Paused"
-            ? <button className="btn" onClick={() => act(() => api.hrUpdate(row.id, { status: "Ready" }), "Will be emailed on the next send")}>Resume</button>
-            : <button className="btn" onClick={() => act(() => api.hrUpdate(row.id, { status: "Paused" }), "Paused: won't be emailed")}>Pause</button>)}
+            ? <button className="btn" onClick={() => act(() => api.hrUpdate(row.id, { status: "Ready", expect_email }), "Will be emailed on the next send")}>Resume</button>
+            : <button className="btn" onClick={() => act(() => api.hrUpdate(row.id, { status: "Paused", expect_email }), "Paused: won't be emailed")}>Pause</button>)}
           <button className="btn btn-ghost" onClick={() => window.confirm("Remove this contact from your HR list?") &&
-            act(() => api.hrDelete(row.id), "Contact removed").then(onClose)}>Delete</button>
+            act(() => api.hrBulk([row.id], "delete", [expect_email]), "Contact removed").then(onClose)}>Delete</button>
         </div>
       </aside>
     </>
@@ -108,6 +110,7 @@ function HrSheetGrid({ rows, file, notify, onChanged, onPreview }) {
   const locked = Boolean(file?.open);
   const [selected, setSelected] = useState(new Set());
   const [draft, setDraft] = useState(EMPTY);
+  const [adding, setAdding] = useState(false);
   const [hrQuery, setHrQuery] = useState("");
   const [hrStatus, setHrStatus] = useState("All");
   const words = hrQuery.toLowerCase().split(/\s+/).filter(Boolean);
@@ -127,7 +130,9 @@ function HrSheetGrid({ rows, file, notify, onChanged, onPreview }) {
   };
 
   async function addDraft() {
+    if (adding) return undefined;
     if (!draft.email.trim()) return notify("Type the HR email to add a row", "error");
+    setAdding(true);
     try {
       const res = await api.hrAdd([draft]);
       if (!res.added) return notify(res.problems[0], "error");
@@ -137,7 +142,10 @@ function HrSheetGrid({ rows, file, notify, onChanged, onPreview }) {
       requestAnimationFrame(() => document.querySelector(`[data-col="name"][data-row="${ordered.length + 1}"]`)?.focus());
     } catch (e) {
       notify(e.message, "error");
+    } finally {
+      setAdding(false);
     }
+    return undefined;
   }
 
   async function openFile() {
@@ -251,7 +259,7 @@ function HrSheetGrid({ rows, file, notify, onChanged, onPreview }) {
                     onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), addDraft())} />
                 </td>
               ))}
-              <td colSpan={3}><button className="btn btn-sm btn-primary" disabled={!draft.email.trim()} onClick={addDraft}>Add row</button></td>
+              <td colSpan={3}><button className="btn btn-sm btn-primary" disabled={!draft.email.trim() || adding} onClick={addDraft}>Add row</button></td>
             </tr>
           </tbody>
         </table>
@@ -260,7 +268,7 @@ function HrSheetGrid({ rows, file, notify, onChanged, onPreview }) {
   );
 }
 
-export default function HrOutreach({ notify, summary, onRunSend, refreshSummary }) {
+export default function HrOutreach({ notify, summary, onRunSend, sending, refreshSummary }) {
   const [data, setData] = useState(null);
   const [form, setForm] = useState(EMPTY);
   const [mode, setMode] = useState("one");
@@ -268,13 +276,19 @@ export default function HrOutreach({ notify, summary, onRunSend, refreshSummary 
   const [tpl, setTpl] = useState(null);
   const [openId, setOpenId] = useState(null);
   const [showTemplate, setShowTemplate] = useState(false);
+  const [busy, setBusy] = useState(false);   // an add or import is on its way
   const fileRef = useRef();
   const bodyRef = useRef();
+  const failingRef = useRef(false);   // polling keeps failing while the server is down: say so once
 
   const load = useCallback(() => api.hr().then((d) => {
+    failingRef.current = false;
     setData(d);
     setTpl((t) => t ?? d.template);
-  }).catch((e) => notify(e.message, "error")), [notify]);
+  }).catch((e) => {
+    if (!failingRef.current) notify(e.message, "error");
+    failingRef.current = true;
+  }), [notify]);
 
   useEffect(() => {
     load();
@@ -298,29 +312,40 @@ export default function HrOutreach({ notify, summary, onRunSend, refreshSummary 
 
   async function addOne(e) {
     e.preventDefault();
+    if (busy) return;
+    setBusy(true);
     try {
       after(await api.hrAdd([form]));
       setForm(EMPTY);
     } catch (err) {
       notify(err.message, "error");
+    } finally {
+      setBusy(false);
     }
   }
 
   async function addPasted() {
+    if (busy) return;
+    setBusy(true);
     try {
       after(await api.hrPaste(pasted));
       setPasted("");
     } catch (err) {
       notify(err.message, "error");
+    } finally {
+      setBusy(false);
     }
   }
 
   async function importFile(file) {
-    if (!file) return;
+    if (!file || busy) return;
+    setBusy(true);
     try {
       after(await api.hrImport(file));
     } catch (err) {
       notify(err.message, "error");
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -351,7 +376,7 @@ export default function HrOutreach({ notify, summary, onRunSend, refreshSummary 
         <div className="kpi"><span className="kpi-label">Paused / failed</span><span className="kpi-value">{count("Paused") + count("Failed")}</span><span className="kpi-sub">not being emailed</span></div>
         <div className="kpi kpi-accent">
           <span className="kpi-label">Send now</span>
-          <button className="btn btn-sm send-now" disabled={!count("Ready") || !!summary?.action?.name || !data.resume} onClick={onRunSend}>
+          <button className="btn btn-sm send-now" disabled={!count("Ready") || !!summary?.action?.name || !data.resume || sending} onClick={onRunSend}>
             <Icon name="send" size={14} /> Email {count("Ready")} contact{count("Ready") !== 1 ? "s" : ""}
           </button>
           <span className="kpi-sub">{data.resume ? `Resume: ${data.resume}` : "Upload your resume in Settings first"} · also runs daily at 9:30</span>
@@ -374,14 +399,14 @@ export default function HrOutreach({ notify, summary, onRunSend, refreshSummary 
               <input placeholder="HR email *" type="email" required value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
               <input placeholder="Company" value={form.company} onChange={(e) => setForm({ ...form, company: e.target.value })} />
               <input placeholder="Role (optional)" value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })} />
-              <button className="btn btn-primary" type="submit">Add</button>
+              <button className="btn btn-primary" type="submit" disabled={busy}>{busy ? "Adding…" : "Add"}</button>
             </form>
           )}
           {mode === "paste" && (
             <>
               <textarea rows={6} value={pasted} onChange={(e) => setPasted(e.target.value)}
                 placeholder={"One contact per line: name, email, company, role\nPriya Sharma, priya@acme.com, Acme Technologies\nRahul Verma, rahul@globex.in, Globex, Backend Developer\nhr@initech.com"} />
-              <div className="fix-actions"><button className="btn btn-primary" disabled={!pasted.trim()} onClick={addPasted}>Add contacts</button></div>
+              <div className="fix-actions"><button className="btn btn-primary" disabled={!pasted.trim() || busy} onClick={addPasted}>Add contacts</button></div>
             </>
           )}
           {mode === "file" && (

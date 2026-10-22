@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api.js";
 import { Field, Icon } from "../components.jsx";
+import { safeUrl } from "../utils.js";
 
 const DRAFT_KEY = "profileBoost.current";
 const DONE_KEY = "profileBoost.done";
@@ -78,8 +79,8 @@ function SavedLink({ label, field, cfg, onSaved, notify }) {
     return (
       <div className="saved-link">
         <span className="saved"><Icon name="check" size={13} /> Saved</span>
-        <a href={saved} target="_blank" rel="noreferrer">{saved.replace(/^https?:\/\/(www\.)?/, "")}</a>
-        <a className="btn btn-sm" href={saved} target="_blank" rel="noreferrer">Open profile ↗</a>
+        <a href={safeUrl(saved)} target="_blank" rel="noreferrer">{saved.replace(/^https?:\/\/(www\.)?/, "")}</a>
+        <a className="btn btn-sm" href={safeUrl(saved)} target="_blank" rel="noreferrer">Open profile ↗</a>
       </div>
     );
   }
