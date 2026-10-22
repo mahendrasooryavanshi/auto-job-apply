@@ -61,8 +61,10 @@ export const api = {
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || "Voice unavailable");
     return res.blob();
   },
-  assistant: (messages, jobId, mode) =>
-    request("/assistant/chat", { method: "POST", body: JSON.stringify({ messages, job_id: jobId, mode }) }),
+  confirmAction: (id, approve, language = "en") =>
+    request("/assistant/confirm", { method: "POST", body: JSON.stringify({ id, approve, language }) }),
+  assistant: (messages, jobId, mode, language = "en") =>
+    request("/assistant/chat", { method: "POST", body: JSON.stringify({ messages, job_id: jobId, mode, language }) }),
   testGmail: () => request("/settings/test-gmail", { method: "POST" }),
   uploadResume: (file) =>
     request(`/settings/resume?filename=${encodeURIComponent(file.name)}`, {

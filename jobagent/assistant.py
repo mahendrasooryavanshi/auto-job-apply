@@ -20,7 +20,7 @@ import anthropic
 import requests
 from bs4 import BeautifulSoup
 
-from . import gemini
+from . import agent_tools, gemini
 from .config import ROOT
 from .finder import EMAIL_RE, IGNORED_EMAIL_PARTS
 from .profile import resume_text
@@ -70,6 +70,26 @@ Structure every reply exactly like this:
    Skip this section on your first turn.
 Begin the first turn with a warm one-sentence welcome as the interviewer from the company, then the first question.
 If the candidate says "end the interview", give a spoken overall verdict (strengths, top 3 things to practise, hire/no-hire signal) then "Model answer:" with a written summary."""
+
+AGENT_SYSTEM = """VOICE ASSISTANT MODE: the user talks to you by voice and hears your reply read aloud.
+- Reply in 1-3 short spoken sentences of plain text (no markdown, lists or symbols). When listing jobs, name at most 3 (company and role).
+- You can operate the user's job-search app with tools: list_jobs, job_details, pipeline_summary, list_hr_contacts, show_job
+  (these run immediately), and research tools for companies.
+- Action tools (approve_job_email, send_emails_now, mark_applied, skip_job, add_hr_contact, find_jobs_now) do NOT run
+  immediately: calling one only asks the user to confirm. Never say an action is done. Call at most one action per turn,
+  and only when the user clearly asked for it. Use ids from list_jobs; if the user's request is ambiguous, ask which one.
+- When the user refers to a job by company or role, look it up with list_jobs first to get its id.
+- The user may speak English, Hindi or Hinglish; speech-to-text may give Hindi in Devanagari, including English words
+  and company names written in Devanagari (e.g. "ब्लू योंडर" = Blue Yonder, "नोड जेएस" = Node.js, "अप्लाई" = apply).
+  Always understand them. Tool arguments (search words, company names, skills) must be in English/Latin letters."""
+
+AGENT_LANGUAGE = {
+    "en": "Reply in simple Indian English.",
+    "hinglish": "Reply in natural Hinglish written in Roman (Latin) letters, the way people in India chat, e.g. "
+                "\"Aapke liye 3 nayi jobs hain, sabse best match Blue Yonder ka Node.js role hai.\" Never use Devanagari.",
+    "hi": "Reply in simple spoken Hindi in Devanagari script, keeping company names, job titles and tech words in English "
+          "letters (e.g. \"आपके लिए 3 नई jobs हैं, सबसे अच्छा match Blue Yonder का Node.js role है।\").",
+}
 
 TOOL_DECLS = [
     {"name": "web_search", "description": "Search the web (Google). Use for company info, interview experiences/questions, news, or who posted a job.",
@@ -240,7 +260,7 @@ def _attachments(message: dict, budget: list[int]) -> list[tuple[str, dict, byte
 
 # ---------------- context ----------------
 
-def _system(cfg: dict, job: dict | None, mode: str) -> str:
+def _system(cfg: dict, job: dict | None, mode: str, language: str = "en") -> str:
     c, s = cfg["candidate"], cfg["search"]
     try:
         resume = resume_text(c["resume_path"])[:9000]
@@ -267,19 +287,25 @@ def _system(cfg: dict, job: dict | None, mode: str) -> str:
                                         skills=", ".join(s["primary_skills"][:8])))
     if mode == "voice":
         parts.append(VOICE_SYSTEM)
+    if mode == "agent":
+        parts += [AGENT_SYSTEM, "LANGUAGE: " + AGENT_LANGUAGE.get(language, AGENT_LANGUAGE["en"])]
     return "\n".join(parts)
 
 
 # ---------------- model loops ----------------
 
-def chat(cfg: dict, messages: list[dict], job: dict | None = None, mode: str = "chat") -> dict:
+def chat(cfg: dict, messages: list[dict], job: dict | None = None, mode: str = "chat", language: str = "en") -> dict:
     """messages: [{"role": "user"|"assistant", "content": str}, ...]. Returns {"reply", "sources"}."""
     env = cfg["env"]
-    system = _system(cfg, job, mode)
+    system = _system(cfg, job, mode, language)
     history = [m for m in messages if m.get("content") or m.get("attachments")][-30:]
     for m in history:
         m["content"] = m.get("content") or "Please look at the attached file(s)."
-    use_tools = mode == "chat"
+    use_tools = mode in ("chat", "agent")
+    if mode == "agent":
+        if not env["GEMINI_API_KEY"]:
+            raise ValueError("The voice assistant needs a Gemini key (free) in Settings")
+        return _chat_gemini(env, system, history, True, agent=True)
     if env["ANTHROPIC_API_KEY"]:
         return _chat_claude(env, system, history, use_tools)
     if env["GEMINI_API_KEY"]:
@@ -287,7 +313,7 @@ def chat(cfg: dict, messages: list[dict], job: dict | None = None, mode: str = "
     raise ValueError("Add a Gemini (free) or Claude key in Settings to use the assistant")
 
 
-def _chat_gemini(env: dict, system: str, history: list[dict], use_tools: bool) -> dict:
+def _chat_gemini(env: dict, system: str, history: list[dict], use_tools: bool, agent: bool = False) -> dict:
     budget = [MAX_INLINE_TOTAL]
     contents = []
     for m in reversed(history):
@@ -299,19 +325,30 @@ def _chat_gemini(env: dict, system: str, history: list[dict], use_tools: bool) -
                 parts.append({"text": f"<attached_file name=\"{meta['name']}\">\n{payload}\n</attached_file>"})
         contents.insert(0, {"role": "model" if m["role"] == "assistant" else "user", "parts": parts})
     sources: list[dict] = []
+    ui: list[dict] = []   # screen actions for the dashboard, e.g. open a job's panel
     for _ in range(MAX_TOOL_ROUNDS):
         # Without a search key, don't offer web_search at all: every failed attempt costs a free-quota request
         decls = [t for t in TOOL_DECLS if t["name"] != "web_search" or env["SERPER_API_KEY"]]
+        if agent:
+            decls = decls + agent_tools.READ_DECLS + agent_tools.ACTION_DECLS
         data = gemini.generate_contents(env["GEMINI_API_KEY"], system, contents,
-                                        tools=[{"functionDeclarations": decls}] if use_tools else None)
+                                        tools=[{"functionDeclarations": decls}] if use_tools else None, thinking="minimal" if agent else "low")
         content = data["candidates"][0].get("content", {"role": "model", "parts": []})
         calls = [p["functionCall"] for p in content.get("parts", []) if "functionCall" in p]
+        text = "".join(p.get("text", "") for p in content.get("parts", []) if not p.get("thought")).strip()
         if not calls:
-            text = "".join(p.get("text", "") for p in content.get("parts", []) if not p.get("thought")).strip()
-            return {"reply": text or "Sorry, I couldn't come up with an answer. Please try rephrasing.", "sources": _dedupe(sources)}
+            return {"reply": text or "Sorry, I couldn't come up with an answer. Please try rephrasing.",
+                    "sources": _dedupe(sources), "ui": ui}
+        action = next((c for c in calls if c["name"] in agent_tools.ACTION_NAMES), None) if agent else None
+        if action:
+            # Never executed here: the API turns this into a confirmation request for the user
+            return {"reply": text, "sources": _dedupe(sources), "ui": ui,
+                    "pending_action": {"tool": action["name"], "args": action.get("args") or {}}}
         contents.append(content)   # keep the model's turn as-is (it carries the thought signature Gemini requires)
         contents.append({"role": "user", "parts": [
-            {"functionResponse": {"name": c["name"], "response": run_tool(env, c["name"], c.get("args") or {}, sources)}} for c in calls]})
+            {"functionResponse": {"name": c["name"], "response":
+                agent_tools.run_read(c["name"], c.get("args") or {}, ui) if c["name"] in agent_tools.READ_NAMES
+                else run_tool(env, c["name"], c.get("args") or {}, sources)}} for c in calls]})
     return {"reply": "I gathered a lot of information but ran out of research steps. Ask me a narrower question.", "sources": _dedupe(sources)}
 
 

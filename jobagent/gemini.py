@@ -55,13 +55,13 @@ def _post(key: str, model: str, body: dict) -> requests.Response:
 
 
 def generate_contents(key: str, system: str, contents: list[dict], schema: dict | None = None,
-                      max_tokens: int = 4096, tools: list[dict] | None = None) -> dict:
+                      max_tokens: int = 4096, tools: list[dict] | None = None, thinking: str = "low") -> dict:
     """One Gemini call over a whole conversation (optionally with function-calling tools); returns the raw response.
     Handles retired models, models without thinking levels, overload retries and readable errors."""
     today = time.strftime("%Y-%m-%d")
     # Each model has its own free daily quota: once the main one is used up, use the lighter model until tomorrow
     model = BUSY_FALLBACK if _daily_used_up.get(key) == today else _model_cache.get(key, DEFAULT_MODEL)
-    config = {"maxOutputTokens": max_tokens, "thinkingConfig": {"thinkingLevel": "low"}}
+    config = {"maxOutputTokens": max_tokens, "thinkingConfig": {"thinkingLevel": thinking}}
     if schema:
         config.update(responseMimeType="application/json", responseSchema=schema)
     body = {"systemInstruction": {"parts": [{"text": system}]}, "contents": contents, "generationConfig": config}

@@ -2,7 +2,9 @@
 import base64
 import json
 import logging
+import secrets
 import threading
+import time
 from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -18,7 +20,7 @@ from .__main__ import cmd_find, cmd_recheck, cmd_send
 from .config import ROOT, load_config
 from .finder import has_job_source
 from .lock import Busy, agent_lock
-from . import assistant, hr, linkedin_account, linkedin_import, profile, settings, voice
+from . import agent_tools, assistant, hr, linkedin_account, linkedin_import, profile, settings, voice
 from .activity import external_run, friendly_error, get_progress, record, recent, set_progress
 from .sheet import Tracker
 
@@ -587,7 +589,8 @@ def linkedin_post(req: PostText):
 class ChatRequest(BaseModel):
     messages: list[dict]
     job_id: int | None = None
-    mode: str = "chat"   # chat | mock
+    mode: str = "chat"   # chat | mock | voice | agent
+    language: str = "en"  # voice assistant replies: en | hinglish | hi
 
 
 @app.post("/api/assistant/chat")
@@ -604,12 +607,86 @@ def assistant_chat(req: ChatRequest):
     if not msgs or msgs[-1]["role"] != "user":
         raise HTTPException(400, "Send a message to the assistant")
     try:
-        return assistant.chat(cfg, msgs, job, req.mode if req.mode in ("mock", "voice") else "chat")
+        result = assistant.chat(cfg, msgs, job, req.mode if req.mode in ("mock", "voice", "agent") else "chat", req.language)
     except ValueError as e:
         raise HTTPException(400, str(e))
     except Exception as e:
         log.exception("Assistant failed")
         raise HTTPException(502, friendly_error(e))
+    pending = result.pop("pending_action", None)
+    if pending:
+        # The model only *asked* for an action: describe it and wait for the user's explicit confirmation
+        try:
+            summary, details = agent_tools.describe(pending["tool"], pending["args"])
+        except (ValueError, TypeError) as e:
+            result["reply"] = f"{result.get('reply') or ''} {str(e).rstrip('.')}.".strip()
+            return result
+        action_id = secrets.token_urlsafe(12)
+        _pending_actions[action_id] = {**pending, "summary": summary, "expires": time.time() + 600}
+        result["pending_action"] = {"id": action_id, "summary": summary, "details": details}
+        result["reply"] = ASK_CONFIRM.get(req.language, ASK_CONFIRM["en"]).format(summary)
+    return result
+
+
+_pending_actions: dict[str, dict] = {}
+
+ASK_CONFIRM = {"en": "I'm about to: {}. Shall I go ahead?",
+               "hinglish": "Ye karna hai: {}. Kar doon? Haan ya na boliye.",
+               "hi": "यह करना है: {}. कर दूँ? हाँ या ना बोलिए।"}
+DONE_MESSAGES = {   # spoken after a confirmed action, per reply language
+    "Approved": {"en": "Approved. It goes out on the next send.", "hinglish": "Approve ho gaya. Agle send mein chala jayega.",
+                 "hi": "Approve हो गया। अगले send में चला जाएगा।"},
+    "Applied": {"en": "Marked as applied.", "hinglish": "Applied mark kar diya.", "hi": "Applied mark कर दिया।"},
+    "Skipped": {"en": "Done, it's hidden.", "hinglish": "Ho gaya, job hide kar di.", "hi": "हो गया, job hide कर दी।"},
+    "hr": {"en": "Added to your HR list. They'll be emailed on the next send.",
+           "hinglish": "HR list mein add kar diya. Agle send mein email chala jayega.",
+           "hi": "HR list में add कर दिया। अगले send में email चला जाएगा।"},
+    "send": {"en": "Sending now. I'll space the emails out; you can watch progress at the top.",
+             "hinglish": "Emails bhejna shuru kar diya. Progress upar dikh raha hai.",
+             "hi": "Emails भेजना शुरू कर दिया। Progress ऊपर दिख रहा है।"},
+    "find": {"en": "Searching for new jobs now. This takes a few minutes.",
+             "hinglish": "Nayi jobs dhoondh raha hoon, kuch minute lagenge.", "hi": "नई jobs ढूँढना शुरू, कुछ मिनट लगेंगे।"},
+    "cancel": {"en": "Cancelled. Nothing was changed.", "hinglish": "Cancel kar diya, kuch change nahi hua.",
+               "hi": "Cancel कर दिया, कुछ नहीं बदला।"},
+}
+
+
+class ConfirmRequest(BaseModel):
+    id: str
+    approve: bool
+    language: str = "en"
+
+
+@app.post("/api/assistant/confirm")
+def assistant_confirm(req: ConfirmRequest):
+    """Run (or drop) an action the assistant requested, exactly as it was shown to the user."""
+    action = _pending_actions.pop(req.id, None)
+    if not action or action["expires"] < time.time():
+        raise HTTPException(410, "That request expired. Ask again.")
+    def say(what: str) -> str:
+        return DONE_MESSAGES[what].get(req.language, DONE_MESSAGES[what]["en"])
+
+    if not req.approve:
+        record("you", "You cancelled an assistant action", action["summary"])
+        return {"done": False, "message": say("cancel")}
+    tool, args = action["tool"], action["args"]
+    if tool in ("approve_job_email", "mark_applied", "skip_job"):
+        status = {"approve_job_email": "Approved", "mark_applied": "Applied", "skip_job": "Skipped"}[tool]
+        update_job(int(args["job_id"]), JobUpdate(status=status))
+        message = say(status)
+    elif tool == "add_hr_contact":
+        res = hr_add([HRContact(name=str(args.get("name") or ""), email=str(args["email"]),
+                                company=str(args.get("company") or ""), role=str(args.get("role") or ""))])
+        if not res["added"]:
+            raise HTTPException(400, res["problems"][0] if res["problems"] else "Couldn't add that contact")
+        message = say("hr")
+    elif tool in ("send_emails_now", "find_jobs_now"):
+        start_action("send" if tool == "send_emails_now" else "find")
+        message = say("send" if tool == "send_emails_now" else "find")
+    else:
+        raise HTTPException(400, "Unknown action")
+    record("you", f"You confirmed: {action['summary']}", "via the voice assistant")
+    return {"done": True, "message": message}
 
 
 @app.post("/api/assistant/upload")
@@ -636,6 +713,7 @@ class SpeakRequest(BaseModel):
     text: str
     voice: str = "Sulafat"
     indian_accent: bool = True
+    persona: str = "interviewer"   # interviewer | assistant
 
 
 @app.get("/api/assistant/voices")
@@ -650,11 +728,28 @@ def assistant_speak(req: SpeakRequest):
     if not key:
         raise HTTPException(400, "Natural voice needs a Gemini key")
     try:
-        return Response(voice.speak(key, req.text, req.voice, req.indian_accent), media_type="audio/wav")
+        return Response(voice.speak(key, req.text, req.voice, req.indian_accent, req.persona), media_type="audio/wav")
     except voice.VoiceError as e:
         raise HTTPException(429, str(e))
     except requests.RequestException as e:
         raise HTTPException(502, friendly_error(e))
+
+
+@app.post("/api/assistant/speak-stream")
+def assistant_speak_stream(req: SpeakRequest):
+    """Raw 16-bit mono PCM as it is generated, so the browser can start playing within about a second and a half."""
+    from fastapi.responses import StreamingResponse
+    key = load_config()["env"]["GEMINI_API_KEY"]
+    if not key:
+        raise HTTPException(400, "Natural voice needs a Gemini key")
+    try:
+        rate, chunks = voice.stream(key, req.text, req.voice, req.indian_accent, req.persona)
+    except voice.VoiceError as e:
+        raise HTTPException(429, str(e))
+    except requests.RequestException as e:
+        raise HTTPException(502, friendly_error(e))
+    return StreamingResponse(chunks, media_type="application/octet-stream",
+                             headers={"X-Sample-Rate": str(rate), "Cache-Control": "no-store"})
 
 
 @app.get("/api/activity")

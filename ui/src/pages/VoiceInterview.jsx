@@ -2,9 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api.js";
 import { Icon, Toggle } from "../components.jsx";
 import Markdown from "../Markdown.jsx";
+import { streamSpeak, unlockAudio } from "../voicePlayer.js";
 
 // Voice runs entirely in the browser: Chrome's speech recognition (your answers) and speech synthesis (the interviewer).
-const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+export const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 const SILENCE_MS = 3500;   // pause this long after speaking and the answer is sent (when auto-send is on)
 const MODEL_RE = /\n?\s*\**\s*model answer\s*:?\s*\**\s*:?/i;
 
@@ -17,7 +18,7 @@ const modelPart = (t) => {
   return i >= 0 ? t.slice(i).replace(MODEL_RE, "").trim() : "";
 };
 
-function pickVoice() {
+export function pickVoice() {
   const voices = window.speechSynthesis?.getVoices() || [];
   return voices.find((v) => v.lang === "en-IN" && /google/i.test(v.name))
     || voices.find((v) => v.lang === "en-IN")
@@ -25,13 +26,13 @@ function pickVoice() {
     || voices.find((v) => v.lang?.startsWith("en"));
 }
 
-const BROWSER_VOICE = "browser";
+export const BROWSER_VOICE = "browser";
 const PREVIEW = "Hi, I'll be your interviewer today. Let's start with a quick introduction about yourself.";
 
-function loadPref(name, fallback) {
+export function loadPref(name, fallback) {
   try { return JSON.parse(localStorage.getItem(`voice.${name}`)) ?? fallback; } catch { return fallback; }
 }
-function savePref(name, value) {
+export function savePref(name, value) {
   try { localStorage.setItem(`voice.${name}`, JSON.stringify(value)); } catch { /* not saved */ }
 }
 
@@ -132,16 +133,11 @@ export default function VoiceInterview({ job, jobId, notify }) {
     if (voiceName !== BROWSER_VOICE) {
       try {
         setPhase("preparing");
-        const blob = await api.speak(text, voiceName, accent);
         audioRef.current?.pause();
-        const audio = new Audio(URL.createObjectURL(blob));
-        audioRef.current = audio;
-        let finished = false;
-        const finish = () => { if (!finished) { finished = true; URL.revokeObjectURL(audio.src); then?.(); } };
-        audio.onended = finish;
-        audio.onerror = finish;
+        const playing = await streamSpeak(text, { voice: voiceName, indianAccent: accent });
+        audioRef.current = playing;
         setPhase("speaking");
-        await audio.play();
+        playing.done.then((stopped) => { if (!stopped) then?.(); });
         return;
       } catch (e) {
         notify(`${e.message}. Using the browser voice for now.`, "error");
@@ -151,6 +147,7 @@ export default function VoiceInterview({ job, jobId, notify }) {
   }, [muted, voiceName, accent, browserSpeak, notify]);
 
   async function preview() {
+    unlockAudio();
     setPreviewing(true);
     await speak(PREVIEW, () => { setPreviewing(false); setPhase("idle"); });
     setPreviewing(false);
@@ -225,6 +222,7 @@ export default function VoiceInterview({ job, jobId, notify }) {
   }
 
   function start() {
+    unlockAudio();
     if (!Recognition) notify("Voice answers need Google Chrome. You can still type your answers below.", "error");
     setMessages([]); saveThread(key, []);
     messagesRef.current = [];

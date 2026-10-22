@@ -192,7 +192,7 @@ export default function App() {
         {page === "activity" && <Activity onOpen={setOpenId} />}
         {page === "profile" && <Profile notify={notify} setup={summary?.setup} />}
         {page === "linkedin" && <LinkedIn notify={notify} />}
-        {page === "assistant" && <Assistant jobs={jobs} notify={notify} initialJobId={assistantJob} />}
+        {page === "assistant" && <Assistant jobs={jobs} notify={notify} initialJobId={assistantJob} onOpenJob={setOpenId} onChanged={refresh} />}
         {page === "hr" && <HrOutreach notify={notify} summary={summary} onRunSend={() => runAction("send")} refreshSummary={refresh} />}
       </main>
 

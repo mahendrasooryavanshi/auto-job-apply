@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api.js";
 import { CompanyAvatar, Icon } from "../components.jsx";
 import Markdown from "../Markdown.jsx";
+import VoiceAgent from "./VoiceAgent.jsx";
 import VoiceInterview from "./VoiceInterview.jsx";
 
 const MAX_KEPT = 40;
@@ -60,7 +61,7 @@ function suggestions(job, mode) {
   ];
 }
 
-export default function Assistant({ jobs, notify, initialJobId }) {
+export default function Assistant({ jobs, notify, initialJobId, onOpenJob, onChanged }) {
   const [jobId, setJobId] = useState(initialJobId || "");
   const [mode, setMode] = useState("chat");
   const key = threadKey(mode, jobId);
@@ -139,9 +140,9 @@ export default function Assistant({ jobs, notify, initialJobId }) {
   return (
     <div className="page assistant">
       <section className={`card assist-card ${dragOver ? "drag-over" : ""}`}
-        onDragOver={(e) => { if (mode !== "voice" && e.dataTransfer.types.includes("Files")) { e.preventDefault(); setDragOver(true); } }}
+        onDragOver={(e) => { if (mode !== "voice" && mode !== "agent" && e.dataTransfer.types.includes("Files")) { e.preventDefault(); setDragOver(true); } }}
         onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setDragOver(false); }}
-        onDrop={(e) => { if (mode === "voice") return; e.preventDefault(); setDragOver(false); addFiles(e.dataTransfer.files); }}>
+        onDrop={(e) => { if (mode === "voice" || mode === "agent") return; e.preventDefault(); setDragOver(false); addFiles(e.dataTransfer.files); }}>
         {dragOver && <div className="drop-hint"><Icon name="upload" size={28} /> Drop images or PDFs to attach</div>}
         <header className="assist-head">
           <div className="assist-context">
@@ -155,12 +156,15 @@ export default function Assistant({ jobs, notify, initialJobId }) {
             <button className={mode === "chat" ? "active" : ""} onClick={() => setMode("chat")}>Ask &amp; research</button>
             <button className={mode === "mock" ? "active" : ""} onClick={() => setMode("mock")}>Mock interview</button>
             <button className={mode === "voice" ? "active" : ""} onClick={() => setMode("voice")}>🎙 Voice interview</button>
+            <button className={mode === "agent" ? "active" : ""} onClick={() => setMode("agent")}>🗣 Voice assistant</button>
           </div>
-          {mode !== "voice" && <button className="btn btn-sm btn-ghost" onClick={newChat} disabled={!messages.length}>New chat</button>}
+          {mode !== "voice" && mode !== "agent" && <button className="btn btn-sm btn-ghost" onClick={newChat} disabled={!messages.length}>New chat</button>}
         </header>
 
         {mode === "voice" ? (
           <div className="assist-body"><VoiceInterview job={job} jobId={jobId} notify={notify} /></div>
+        ) : mode === "agent" ? (
+          <div className="assist-body"><VoiceAgent jobId={jobId} notify={notify} onOpenJob={onOpenJob} onChanged={onChanged} /></div>
         ) : (
           <>
         <div className="assist-body">
