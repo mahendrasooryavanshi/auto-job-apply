@@ -5,6 +5,24 @@ import Markdown from "../Markdown.jsx";
 import VoiceInterview from "./VoiceInterview.jsx";
 
 const MAX_KEPT = 40;
+const MAX_FILES = 5;
+const ACCEPT = ".png,.jpg,.jpeg,.webp,.gif,.pdf,.docx,.txt,.md,.csv";
+const fileUrl = (id) => `/api/assistant/upload/${id}`;
+const isImage = (f) => (f.type || "").startsWith("image/");
+
+function Attachment({ file, onRemove }) {
+  return (
+    <span className={`attach-chip ${isImage(file) ? "is-image" : ""}`} title={file.name}>
+      {isImage(file)
+        ? <img src={fileUrl(file.id)} alt={file.name} />
+        : <span className="attach-icon"><Icon name="file" size={16} /></span>}
+      {!isImage(file) && <span className="attach-name">{file.name}</span>}
+      {onRemove
+        ? <button onClick={onRemove} aria-label={`Remove ${file.name}`}>×</button>
+        : <a href={fileUrl(file.id)} target="_blank" rel="noreferrer" aria-label={`Open ${file.name}`} />}
+    </span>
+  );
+}
 
 function threadKey(mode, jobId) {
   return `assistant.${mode}.${jobId || "general"}`;
@@ -60,18 +78,46 @@ export default function Assistant({ jobs, notify, initialJobId }) {
   const jobOptions = useMemo(() => [...jobs].filter((j) => j.Status !== "Skipped").sort((a, b) => b.id - a.id), [jobs]);
 
   const [failed, setFailed] = useState(false);
+  const [pending, setPending] = useState([]);       // uploaded files waiting to be sent with the next message
+  const [uploading, setUploading] = useState(0);
+  const [dragOver, setDragOver] = useState(false);
+  const fileRef = useRef();
+
+  async function addFiles(fileList) {
+    const files = [...fileList].slice(0, MAX_FILES - pending.length);
+    if (fileList.length > files.length) notify(`Up to ${MAX_FILES} files per message`, "error");
+    for (const file of files) {
+      setUploading((n) => n + 1);
+      try {
+        const meta = await api.uploadAttachment(file);
+        setPending((p) => [...p, meta]);
+      } catch (e) {
+        notify(`${file.name || "File"}: ${e.message}`, "error");
+      } finally {
+        setUploading((n) => n - 1);
+      }
+    }
+  }
+
+  function onPaste(e) {
+    const images = [...(e.clipboardData?.files || [])].filter((f) => f.type.startsWith("image/"));
+    if (images.length) { e.preventDefault(); addFiles(images); }
+  }
 
   async function send(text, retry = false) {
-    const content = (text ?? input).trim();
-    if ((!content && !retry) || thinking) return;
+    const files = retry ? [] : pending;
+    const content = (text ?? input).trim() || (files.length ? "Please look at the attached file(s) and tell me what's important for me." : "");
+    if ((!content && !retry) || thinking || uploading) return;
     setFailed(false);
-    const next = retry ? messages : [...messages, { role: "user", content }];
+    const next = retry ? messages : [...messages, { role: "user", content, files }];
+    setPending([]);
     setMessages(next);
     saveThread(key, next);
     setInput("");
     setThinking(true);
     try {
-      const res = await api.assistant(next.map(({ role, content: c }) => ({ role, content: c })), jobId ? Number(jobId) : null, mode);
+      const res = await api.assistant(next.map(({ role, content: c, files: f }) => ({ role, content: c, attachments: (f || []).map((x) => x.id) })),
+        jobId ? Number(jobId) : null, mode);
       const done = [...next, { role: "assistant", content: res.reply, sources: res.sources }];
       setMessages(done);
       saveThread(key, done);
@@ -92,7 +138,11 @@ export default function Assistant({ jobs, notify, initialJobId }) {
 
   return (
     <div className="page assistant">
-      <section className="card assist-card">
+      <section className={`card assist-card ${dragOver ? "drag-over" : ""}`}
+        onDragOver={(e) => { if (mode !== "voice" && e.dataTransfer.types.includes("Files")) { e.preventDefault(); setDragOver(true); } }}
+        onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setDragOver(false); }}
+        onDrop={(e) => { if (mode === "voice") return; e.preventDefault(); setDragOver(false); addFiles(e.dataTransfer.files); }}>
+        {dragOver && <div className="drop-hint"><Icon name="upload" size={28} /> Drop images or PDFs to attach</div>}
         <header className="assist-head">
           <div className="assist-context">
             {job ? <CompanyAvatar name={job.Company} size={36} /> : <span className="assist-logo"><Icon name="sparkle" size={18} /></span>}
@@ -133,6 +183,7 @@ export default function Assistant({ jobs, notify, initialJobId }) {
                 <div key={i} className={`msg msg-${m.role}`}>
                   {m.role === "assistant" && <span className="msg-avatar"><Icon name="sparkle" size={15} /></span>}
                   <div className="msg-bubble">
+                    {m.files?.length > 0 && <div className="msg-files">{m.files.map((f) => <Attachment key={f.id} file={f} />)}</div>}
                     {m.role === "assistant" ? <Markdown text={m.content} /> : <p>{m.content}</p>}
                     {m.sources?.length > 0 && (
                       <div className="msg-sources">
@@ -170,11 +221,21 @@ export default function Assistant({ jobs, notify, initialJobId }) {
           )}
         </div>
 
+        {(pending.length > 0 || uploading > 0) && (
+          <div className="pending-files">
+            {pending.map((f) => <Attachment key={f.id} file={f} onRemove={() => setPending((p) => p.filter((x) => x.id !== f.id))} />)}
+            {uploading > 0 && <span className="attach-chip uploading"><span className="spinner" /> Uploading…</span>}
+          </div>
+        )}
         <footer className="assist-input">
-          <textarea ref={inputRef} rows={1} value={input} placeholder={mode === "mock" ? "Type your answer…" : "Ask about the job, company, contacts, interview…"}
+          <input ref={fileRef} type="file" accept={ACCEPT} multiple hidden onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }} />
+          <button className="btn attach-btn" onClick={() => fileRef.current.click()} disabled={pending.length >= MAX_FILES}
+            title="Attach images, screenshots, PDFs or documents" aria-label="Attach files">📎</button>
+          <textarea ref={inputRef} rows={1} value={input} onPaste={onPaste}
+            placeholder={mode === "mock" ? "Type your answer…" : "Ask anything, or attach a screenshot / PDF (you can paste images too)…"}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} />
-          <button className="btn btn-primary send-btn" onClick={() => send()} disabled={!input.trim() || thinking} aria-label="Send">
+          <button className="btn btn-primary send-btn" onClick={() => send()} disabled={(!input.trim() && !pending.length) || thinking || uploading > 0} aria-label="Send">
             <Icon name="send" size={16} />
           </button>
         </footer>

@@ -598,8 +598,9 @@ def assistant_chat(req: ChatRequest):
         rows = dict(Tracker(cfg["sheet_path"]).rows())
         if req.job_id in rows:
             job = {k: ("" if v is None else v) for k, v in rows[req.job_id].items()}
-    msgs = [{"role": m.get("role"), "content": str(m.get("content", ""))[:8000]} for m in req.messages
-            if m.get("role") in ("user", "assistant")]
+    msgs = [{"role": m.get("role"), "content": str(m.get("content", ""))[:8000],
+             "attachments": [str(a) for a in (m.get("attachments") or [])][:6]}
+            for m in req.messages if m.get("role") in ("user", "assistant")]
     if not msgs or msgs[-1]["role"] != "user":
         raise HTTPException(400, "Send a message to the assistant")
     try:
@@ -609,6 +610,26 @@ def assistant_chat(req: ChatRequest):
     except Exception as e:
         log.exception("Assistant failed")
         raise HTTPException(502, friendly_error(e))
+
+
+@app.post("/api/assistant/upload")
+async def assistant_upload(request: Request, filename: str):
+    data = await request.body()
+    try:
+        return assistant.save_upload(filename, data)
+    except assistant.UploadError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/assistant/upload/{file_id}")
+def assistant_file(file_id: str):
+    from fastapi.responses import Response
+    try:
+        meta, data = assistant.load_upload(file_id)
+    except assistant.UploadError as e:
+        raise HTTPException(404, str(e))
+    return Response(data, media_type=meta["type"] if meta["ext"] in assistant.MEDIA_TYPES else "application/octet-stream",
+                    headers={"Content-Disposition": f'inline; filename="{meta["name"]}"', "X-Content-Type-Options": "nosniff"})
 
 
 class SpeakRequest(BaseModel):

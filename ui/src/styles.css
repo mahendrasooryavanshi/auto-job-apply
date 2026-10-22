@@ -1187,3 +1187,27 @@ nav.status-tabs { flex-direction: row; flex-wrap: nowrap; align-items: stretch; 
 .voice-picker .toggle-row { border: none; padding: 6px 0; gap: 8px; }
 .voice-mini { width: auto !important; padding: 4px 8px !important; font-size: 12.5px; font-weight: 600; }
 .voice-orb.preparing { animation: think 1.4s linear infinite; opacity: .85; }
+
+/* ---------- Assistant attachments ---------- */
+.assist-card { position: relative; }
+.assist-card.drag-over { outline: 2px dashed var(--accent); outline-offset: -6px; }
+.drop-hint { position: absolute; inset: 0; z-index: 5; display: grid; place-content: center; justify-items: center; gap: 8px;
+  background: color-mix(in srgb, var(--accent) 12%, color-mix(in srgb, var(--surface) 85%, transparent)); color: var(--accent);
+  font-weight: 700; font-size: 16px; border-radius: 12px; pointer-events: none; }
+.attach-btn { width: 44px; padding: 0 !important; font-size: 18px; }
+.pending-files { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 14px 0; border-top: 1px solid var(--border); background: var(--surface); }
+.attach-chip { position: relative; display: inline-flex; align-items: center; gap: 8px; max-width: 240px; padding: 6px 30px 6px 8px;
+  border-radius: 10px; border: 1px solid var(--border); background: var(--surface-2); font-size: 12.5px; font-weight: 600; }
+.attach-chip.is-image { padding: 3px; }
+.attach-chip img { width: 64px; height: 64px; object-fit: cover; border-radius: 8px; display: block; }
+.attach-icon { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); flex-shrink: 0; }
+.attach-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attach-chip button { position: absolute; top: 3px; right: 3px; width: 20px; height: 20px; border-radius: 50%; border: none;
+  background: rgba(0, 0, 0, .55); color: #fff; cursor: pointer; line-height: 1; font-size: 14px; }
+.attach-chip a { position: absolute; inset: 0; }
+.attach-chip.uploading { padding-right: 10px; color: var(--muted); }
+.msg-files { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.msg-user .attach-chip { background: rgba(255, 255, 255, .18); border-color: rgba(255, 255, 255, .35); color: #fff; padding-right: 10px; }
+.msg-user .attach-chip.is-image { padding: 3px; }
+.msg-user .attach-icon { background: rgba(255, 255, 255, .25); color: #fff; }
+.msg-user .msg-bubble p:empty { display: none; }

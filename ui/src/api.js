@@ -49,6 +49,9 @@ export const api = {
   }),
   linkedinDisconnect: () => request("/linkedin/disconnect", { method: "POST" }),
   voices: () => request("/assistant/voices"),
+  uploadAttachment: (file) => request(`/assistant/upload?filename=${encodeURIComponent(file.name || "pasted-image.png")}`, {
+    method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file,
+  }),
   speak: async (text, voice, indianAccent) => {
     const res = await fetch("/api/assistant/speak", {
       method: "POST",
