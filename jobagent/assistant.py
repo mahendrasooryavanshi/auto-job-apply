@@ -48,6 +48,16 @@ Mix: technical (their stack: {skills}), system/low-level design, debugging scena
 After each answer: give a score out of 10, 2-3 bullets on what was good and what was missing, a model answer in brief, then ask the next question.
 After 6 questions (or when asked), give an overall summary with the top 3 things to practise. Don't use tools in this mode."""
 
+VOICE_SYSTEM = """VOICE INTERVIEW: this is a spoken, real-time interview. Everything before the line "Model answer:" is read aloud
+to the candidate, so write it as natural speech: short sentences, no markdown, no bullet points, no symbols, under 70 words.
+Structure every reply exactly like this:
+1. (from the second turn on) one or two sentences of honest feedback on their last answer, including a score like "I'd give that a 7 out of 10".
+2. The next interview question, asked conversationally as a real interviewer would. Ask ONE question.
+3. Then a line "Model answer:" followed by a concise ideal answer to their PREVIOUS question in bullet points (shown on screen, not spoken).
+   Skip this section on your first turn.
+Begin the first turn with a warm one-sentence welcome as the interviewer from the company, then the first question.
+If the candidate says "end the interview", give a spoken overall verdict (strengths, top 3 things to practise, hire/no-hire signal) then "Model answer:" with a written summary."""
+
 TOOL_DECLS = [
     {"name": "web_search", "description": "Search the web (Google). Use for company info, interview experiences/questions, news, or who posted a job.",
      "parameters": {"type": "OBJECT", "properties": {"query": {"type": "STRING", "description": "Search query"}}, "required": ["query"]}},
@@ -177,9 +187,11 @@ def _system(cfg: dict, job: dict | None, mode: str) -> str:
     if not cfg["env"]["SERPER_API_KEY"]:
         parts.append("\nWEB SEARCH IS NOT SET UP: you can still read specific pages (read_page) and look companies up (company_lookup). "
                      "Mention once, briefly, that a free Serper.dev key in Settings enables web search for interview experiences.")
-    if mode == "mock":
+    if mode in ("mock", "voice"):
         parts.append(MOCK_SYSTEM.format(roles=s["roles"][0] if s["roles"] else "software engineer",
                                         skills=", ".join(s["primary_skills"][:8])))
+    if mode == "voice":
+        parts.append(VOICE_SYSTEM)
     return "\n".join(parts)
 
 
@@ -190,7 +202,7 @@ def chat(cfg: dict, messages: list[dict], job: dict | None = None, mode: str = "
     env = cfg["env"]
     system = _system(cfg, job, mode)
     history = [m for m in messages if m.get("content")][-30:]
-    use_tools = mode != "mock"
+    use_tools = mode == "chat"
     if env["ANTHROPIC_API_KEY"]:
         return _chat_claude(env, system, history, use_tools)
     if env["GEMINI_API_KEY"]:

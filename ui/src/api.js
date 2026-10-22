@@ -48,6 +48,16 @@ export const api = {
     method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file,
   }),
   linkedinDisconnect: () => request("/linkedin/disconnect", { method: "POST" }),
+  voices: () => request("/assistant/voices"),
+  speak: async (text, voice, indianAccent) => {
+    const res = await fetch("/api/assistant/speak", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Job-Agent": "1" },
+      body: JSON.stringify({ text, voice, indian_accent: indianAccent }),
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || "Voice unavailable");
+    return res.blob();
+  },
   assistant: (messages, jobId, mode) =>
     request("/assistant/chat", { method: "POST", body: JSON.stringify({ messages, job_id: jobId, mode }) }),
   testGmail: () => request("/settings/test-gmail", { method: "POST" }),

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api.js";
 import { CompanyAvatar, Icon } from "../components.jsx";
 import Markdown from "../Markdown.jsx";
+import VoiceInterview from "./VoiceInterview.jsx";
 
 const MAX_KEPT = 40;
 
@@ -103,10 +104,15 @@ export default function Assistant({ jobs, notify, initialJobId }) {
           <div className="seg-control">
             <button className={mode === "chat" ? "active" : ""} onClick={() => setMode("chat")}>Ask &amp; research</button>
             <button className={mode === "mock" ? "active" : ""} onClick={() => setMode("mock")}>Mock interview</button>
+            <button className={mode === "voice" ? "active" : ""} onClick={() => setMode("voice")}>🎙 Voice interview</button>
           </div>
-          <button className="btn btn-sm btn-ghost" onClick={newChat} disabled={!messages.length}>New chat</button>
+          {mode !== "voice" && <button className="btn btn-sm btn-ghost" onClick={newChat} disabled={!messages.length}>New chat</button>}
         </header>
 
+        {mode === "voice" ? (
+          <div className="assist-body"><VoiceInterview job={job} jobId={jobId} notify={notify} /></div>
+        ) : (
+          <>
         <div className="assist-body">
           {messages.length === 0 ? (
             <div className="assist-empty">
@@ -173,6 +179,8 @@ export default function Assistant({ jobs, notify, initialJobId }) {
           </button>
         </footer>
         <p className="assist-note muted small">Contact details are shown only when published on a cited page. Answers can be wrong: check important facts.</p>
+          </>
+        )}
       </section>
     </div>
   );

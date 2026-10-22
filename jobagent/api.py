@@ -18,7 +18,7 @@ from .__main__ import cmd_find, cmd_recheck, cmd_send
 from .config import ROOT, load_config
 from .finder import has_job_source
 from .lock import Busy, agent_lock
-from . import assistant, hr, linkedin_account, linkedin_import, profile, settings
+from . import assistant, hr, linkedin_account, linkedin_import, profile, settings, voice
 from .activity import external_run, friendly_error, get_progress, record, recent, set_progress
 from .sheet import Tracker
 
@@ -603,11 +603,36 @@ def assistant_chat(req: ChatRequest):
     if not msgs or msgs[-1]["role"] != "user":
         raise HTTPException(400, "Send a message to the assistant")
     try:
-        return assistant.chat(cfg, msgs, job, "mock" if req.mode == "mock" else "chat")
+        return assistant.chat(cfg, msgs, job, req.mode if req.mode in ("mock", "voice") else "chat")
     except ValueError as e:
         raise HTTPException(400, str(e))
     except Exception as e:
         log.exception("Assistant failed")
+        raise HTTPException(502, friendly_error(e))
+
+
+class SpeakRequest(BaseModel):
+    text: str
+    voice: str = "Sulafat"
+    indian_accent: bool = True
+
+
+@app.get("/api/assistant/voices")
+def assistant_voices():
+    return {"voices": voice.VOICES}
+
+
+@app.post("/api/assistant/speak")
+def assistant_speak(req: SpeakRequest):
+    from fastapi.responses import Response
+    key = load_config()["env"]["GEMINI_API_KEY"]
+    if not key:
+        raise HTTPException(400, "Natural voice needs a Gemini key")
+    try:
+        return Response(voice.speak(key, req.text, req.voice, req.indian_accent), media_type="audio/wav")
+    except voice.VoiceError as e:
+        raise HTTPException(429, str(e))
+    except requests.RequestException as e:
         raise HTTPException(502, friendly_error(e))
 
 
