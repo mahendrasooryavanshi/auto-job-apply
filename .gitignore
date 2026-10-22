@@ -8,3 +8,5 @@ config.yaml
 ui/node_modules/
 ui/dist/
 *.tmp.xlsx
+*.pem
+*.key
