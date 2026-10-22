@@ -8,6 +8,7 @@
   python -m jobagent ui        start the dashboard at http://localhost:8765
 """
 import logging
+import os
 import sys
 import time
 from collections import Counter
@@ -288,7 +289,7 @@ def main() -> None:
             raise
     elif cmd == "ui":
         import uvicorn
-        uvicorn.run("jobagent.api:app", host="127.0.0.1", port=8765)
+        uvicorn.run("jobagent.api:app", host=os.environ.get("JOBAGENT_HOST", "127.0.0.1"), port=int(os.environ.get("JOBAGENT_PORT", "8765")))
     else:
         print(__doc__)
 
