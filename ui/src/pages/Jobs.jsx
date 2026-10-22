@@ -41,6 +41,7 @@ export default function Jobs({ jobs, counts, filter, setFilter, openId, onOpen, 
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState("");          // query after typing pauses
   const [limit, setLimit] = useState(loadPageSize);
+  const [filters, setFiltersState] = useState(loadFilters);
   // Cursor-based paging: cursors[i] is where page i starts ("" = newest). Going back pops the stack.
   // The stack belongs to one set of filters: a new filter, search or page size starts again from the newest jobs
   // in the same render, so no request goes out with the old cursor.
@@ -52,7 +53,6 @@ export default function Jobs({ jobs, counts, filter, setFilter, openId, onOpen, 
   const [page, setPage] = useState(null);
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState(new Set());
-  const [filters, setFiltersState] = useState(loadFilters);
   const [panel, setPanel] = useState(null);   // open dropdown: "filters" | "sort" | null
   const cursor = cursors[cursors.length - 1];
   const setFilters = (f) => {
