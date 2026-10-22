@@ -25,7 +25,7 @@ def score(job: dict, search: dict) -> tuple[int, list[str]]:
     """Return (match percent, matched skills). Primary skills count double."""
     text = f"{job['Role']} {job['Description']}".lower()
     primary = [s for s in search["primary_skills"] if _has(text, s)]
-    secondary = [s for s in search.get("secondary_skills", []) if _has(text, s)]
+    secondary = [s for s in search.get("secondary_skills", []) if _has(text, s) and s not in primary]
     total = 2 * len(search["primary_skills"]) + len(search.get("secondary_skills", []))
     # A post rarely lists the whole stack, so ~3 matching primary skills already counts as a full match;
     # otherwise a long skill list would push every job below the threshold.

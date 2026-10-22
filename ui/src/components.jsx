@@ -100,7 +100,7 @@ export function Ring({ value, max, size = 92 }) {
   const c = 2 * Math.PI * r;
   const pct = max ? Math.min(1, value / max) : 0;
   return (
-    <svg width={size} height={size} className="ring" role="img" aria-label={`${value} of ${max}`}>
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="ring" role="img" aria-label={`${value} of ${max}`}>
       <circle cx={size / 2} cy={size / 2} r={r} className="ring-track" />
       <circle cx={size / 2} cy={size / 2} r={r} className="ring-fill"
         strokeDasharray={c} strokeDashoffset={c * (1 - pct)} transform={`rotate(-90 ${size / 2} ${size / 2})`} />

@@ -890,3 +890,7 @@ body { transition: background-color .25s, color .25s; }
   .email-card, .add-contact { margin-left: 16px; margin-right: 16px; }
   .add-contact { width: calc(100% - 32px); }
 }
+@media (max-width: 560px) {
+  .kpi-ring { grid-column: auto; flex-direction: column; align-items: flex-start; gap: 6px; padding: 14px 16px; }
+  .kpi-ring .ring { width: 64px; height: 64px; }
+}

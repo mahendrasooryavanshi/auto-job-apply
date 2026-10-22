@@ -13,7 +13,10 @@ const fieldsFrom = (job) => ({
 function siteName(link) {
   try {
     const host = new URL(link).hostname.replace(/^www\.|^in\./, "");
-    return host.includes("linkedin") ? "LinkedIn" : host.includes("myworkdayjobs") ? "company site" : host.split(".").slice(-2, -1)[0] || host;
+    if (host.includes("linkedin")) return "LinkedIn";
+    if (host.includes("myworkdayjobs") || /greenhouse|lever|ashby|smartrecruiters|workable|recruitee|personio|breezy|rippling/.test(host)) return "company site";
+    const name = host.split(".").slice(-2, -1)[0] || host;
+    return name.charAt(0).toUpperCase() + name.slice(1);
   } catch {
     return "job site";
   }
@@ -38,7 +41,7 @@ export default function JobPanel({ job, onClose, onSaved, notify, busy }) {
   const dirty = Object.keys(form).some((k) => (form[k] || "") !== (original[k] || ""));
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
   const hasEmailFlow = Boolean(job["Recruiter Email"] || job["Email Subject"]) || ["Drafted", "Approved", "Emailed", "Replied"].includes(job.Status);
-  const skills = String(job["Tech Stack"] || "").split(",").map((s) => s.trim()).filter(Boolean);
+  const skills = [...new Set(String(job["Tech Stack"] || "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean))];
   const applicants = applicantsOf(job);
   const jd = String(job["Full JD"] || job["Profile / JD Summary"] || "").replace(/\*\*/g, "");
   const meta = String(job.Notes || "").split(" · ").filter((x) => x && !/applicants|Target company|apply on/i.test(x));
