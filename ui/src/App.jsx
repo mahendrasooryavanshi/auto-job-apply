@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "./api.js";
-import { Icon } from "./components.jsx";
+import { Icon, ThemePicker } from "./components.jsx";
+import { ACCENTS, loadTheme, saveTheme } from "./theme.js";
 import JobPanel from "./JobPanel.jsx";
 import Overview from "./pages/Overview.jsx";
 import Jobs from "./pages/Jobs.jsx";
@@ -33,6 +34,22 @@ export default function App() {
   const [jobsFilter, setJobsFilter] = useState("All");
   const [toast, setToast] = useState(null);
   const [serverDown, setServerDown] = useState(false);
+  const [theme, setTheme] = useState(loadTheme);
+  const [updateReady, setUpdateReady] = useState(false);
+
+  // Open tabs keep running the old dashboard after an update: notice a new build and offer a reload
+  useEffect(() => {
+    let first = null;
+    const check = () => api.version().then((v) => {
+      if (first === null) first = v.build;
+      else if (v.build !== first) setUpdateReady(true);
+    }).catch(() => {});
+    check();
+    const t = setInterval(check, 30000);
+    return () => clearInterval(t);
+  }, []);
+
+  const changeTheme = (t) => { setTheme(t); saveTheme(t); };
 
   useEffect(() => {
     const onHash = () => setPage(pageFromHash());
@@ -107,7 +124,7 @@ export default function App() {
         </div>
         <nav>
           {PAGES.map((p) => (
-            <button key={p.id} className={`nav-item ${page === p.id ? "active" : ""}`} onClick={() => go(p.id)}>
+            <button key={p.id} className={`nav-item ${page === p.id ? "active" : ""}`} onClick={() => go(p.id)} aria-label={p.label}>
               <Icon name={p.icon} />
               <span>{p.label}</span>
               {p.id === "jobs" && counts.Drafted > 0 && <span className="nav-count" title="Waiting for your review">{counts.Drafted}</span>}
@@ -130,6 +147,7 @@ export default function App() {
         <header className="topbar">
           <h1>{title}</h1>
           <div className="actions">
+            <ThemePicker theme={theme} onChange={changeTheme} accents={ACCENTS} />
             {running && <span className="running"><span className="spinner" /> {summary?.action?.progress || (running === "find" ? "Finding jobs…" : running === "send" ? "Sending emails…" : "Working…")}</span>}
             <button className="btn" onClick={() => runAction("find")} disabled={!!running || serverDown || noJobSource}
               title={noJobSource ? "Add a JSearch or Adzuna key in Settings first" : "Search job sites now"}>
@@ -141,6 +159,12 @@ export default function App() {
           </div>
         </header>
 
+        {updateReady && (
+          <div className="alert update-banner">
+            <strong>A new version of Job Agent is ready.</strong>
+            <button className="btn btn-primary btn-sm" onClick={() => window.location.reload()}>Reload now</button>
+          </div>
+        )}
         {serverDown && (
           <div className="alert alert-error">Can't reach the agent server. Start it with <code>.venv/bin/python -m jobagent ui</code>.</div>
         )}

@@ -6,6 +6,15 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
     <title>Job Agent</title>
+    <script>
+      (function () {
+        var t = {};
+        try { t = JSON.parse(localStorage.getItem("jobAgent.theme.v2")) || {}; } catch (e) {}
+        var dark = t.mode === "dark" || (t.mode === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
+        document.documentElement.dataset.mode = dark ? "dark" : "light";
+        document.documentElement.dataset.accent = t.accent || "lavender";
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

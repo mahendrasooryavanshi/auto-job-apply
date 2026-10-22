@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "./api.js";
-import { Icon, StatusBadge } from "./components.jsx";
+import { CompanyAvatar, Icon, MatchPill, SourceTag, StatusBadge, timeAgo } from "./components.jsx";
+import { applicantsOf } from "./utils.js";
 
 const fieldsFrom = (job) => ({
   recruiter_email: job["Recruiter Email"],
@@ -9,23 +10,44 @@ const fieldsFrom = (job) => ({
   notes: job.Notes,
 });
 
+function siteName(link) {
+  try {
+    const host = new URL(link).hostname.replace(/^www\.|^in\./, "");
+    return host.includes("linkedin") ? "LinkedIn" : host.includes("myworkdayjobs") ? "company site" : host.split(".").slice(-2, -1)[0] || host;
+  } catch {
+    return "job site";
+  }
+}
+
 export default function JobPanel({ job, onClose, onSaved, notify, busy }) {
   const [form, setForm] = useState(fieldsFrom(job));
   const [saving, setSaving] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const [showEmail, setShowEmail] = useState(false);
 
-  // Reset the form only when a different job is opened, so polling doesn't wipe unsaved edits
-  useEffect(() => setForm(fieldsFrom(job)), [job.id]);
+  // Reset when a different job is opened, so polling doesn't wipe unsaved edits
+  useEffect(() => { setForm(fieldsFrom(job)); setExpanded(false); setShowEmail(false); }, [job.id]);
+  useEffect(() => {
+    const esc = (e) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", esc);
+    return () => window.removeEventListener("keydown", esc);
+  }, [onClose]);
 
-  const locked = job.Status === "Emailed" || job.Status === "Replied";
+  const locked = ["Emailed", "Replied"].includes(job.Status);
   const original = fieldsFrom(job);
   const dirty = Object.keys(form).some((k) => (form[k] || "") !== (original[k] || ""));
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
+  const hasEmailFlow = Boolean(job["Recruiter Email"] || job["Email Subject"]) || ["Drafted", "Approved", "Emailed", "Replied"].includes(job.Status);
+  const skills = String(job["Tech Stack"] || "").split(",").map((s) => s.trim()).filter(Boolean);
+  const applicants = applicantsOf(job);
+  const jd = String(job["Full JD"] || job["Profile / JD Summary"] || "").replace(/\*\*/g, "");
+  const meta = String(job.Notes || "").split(" · ").filter((x) => x && !/applicants|Target company|apply on/i.test(x));
 
-  async function save(status) {
+  async function save(status, message) {
     setSaving(true);
     try {
       await api.updateJob(job.id, { ...form, ...(status ? { status } : {}) });
-      notify(status ? `Marked ${status}` : "Saved");
+      notify(message || (status ? `Marked ${status}` : "Saved"));
       onSaved();
     } catch (e) {
       notify(e.message, "error");
@@ -34,79 +56,112 @@ export default function JobPanel({ job, onClose, onSaved, notify, busy }) {
     }
   }
 
-  const details = [
-    ["Company", job.Company],
-    ["Location", job.Location],
-    ["Posted", job["Posted Date"]],
-    ["Budget", job.Budget],
-    ["Match", `${job["Match %"]}%`],
-    ["Tech stack", job["Tech Stack"]],
-    ["Mobile", job.Mobile || "—"],
-    ["Source", job.Source],
-    ["Email sent", job["Email Sent On"] || "—"],
-    ["Follow-up sent", job["Follow-up Sent On"] || "—"],
-    ["Replied", job["Replied On"] || "—"],
-  ];
+  const facts = [
+    ["Salary", job.Budget && job.Budget !== "Not disclosed" ? job.Budget : "Not shown"],
+    ["Posted", job["Posted Date"] ? `${timeAgo(job["Posted Date"])} · ${String(job["Posted Date"]).slice(0, 10)}` : "—"],
+    ["Applicants", applicants ? (applicants > 200 ? "200+" : `${applicants}`) : "Unknown"],
+    ["Recruiter", job["Recruiter Email"] || "Not listed"],
+    job.Mobile && ["Phone", job.Mobile],
+    job["Email Sent On"] && ["Emailed", job["Email Sent On"]],
+    job["Follow-up Sent On"] && ["Followed up", job["Follow-up Sent On"]],
+    job["Replied On"] && ["Replied", job["Replied On"]],
+  ].filter(Boolean);
 
   return (
     <>
       <div className="overlay" onClick={onClose} />
-      <aside className="panel">
-        <div className="panel-head">
-          <div>
+      <aside className="panel job-sheet" aria-label={`${job.Role} at ${job.Company}`}>
+        <header className="js-hero">
+          <CompanyAvatar name={job.Company} size={56} />
+          <div className="js-head">
             <h2>{job.Role}</h2>
-            <StatusBadge status={job.Status} />
+            <p>{job.Company}{job.Location ? ` · ${job.Location}` : ""}</p>
+            <div className="js-badges">
+              <StatusBadge status={job.Status} />
+              <MatchPill value={job["Match %"]} />
+              <SourceTag source={job.Source} />
+              {meta.slice(0, 2).map((m) => <span key={m} className="source-tag">{m}</span>)}
+            </div>
           </div>
           <button className="icon-btn" onClick={onClose} aria-label="Close"><Icon name="close" /></button>
+        </header>
+
+        <div className="js-actions">
+          {job["Job Link"] && (
+            <a className="btn btn-primary" href={job["Job Link"]} target="_blank" rel="noreferrer">
+              <Icon name="link" size={15} /> Apply on {siteName(job["Job Link"])}
+            </a>
+          )}
+          {!locked && job.Status !== "Applied" && (
+            <button className="btn" disabled={saving || busy} onClick={() => save("Applied", "Marked as applied. Good luck!")}>
+              <Icon name="check" size={15} /> I applied
+            </button>
+          )}
+          {!locked && (job.Status !== "Skipped"
+            ? <button className="btn btn-ghost" disabled={saving || busy} onClick={() => save("Skipped")}>Not interested</button>
+            : <button className="btn btn-ghost" disabled={saving || busy} onClick={() => save("Drafted")}>Restore</button>)}
         </div>
 
-        <a className="btn btn-sm post-link" href={job["Job Link"]} target="_blank" rel="noreferrer"><Icon name="link" size={14} /> Open job post</a>
-
-        <dl className="details">
-          {details.map(([k, v]) => (
-            <div key={k}><dt>{k}</dt><dd>{v}</dd></div>
+        <div className="facts">
+          {facts.map(([k, v]) => (
+            <div key={k} className="fact"><span>{k}</span><strong title={v}>{v}</strong></div>
           ))}
-        </dl>
+        </div>
 
-        <h3>Job description</h3>
-        {job["Full JD"] ? (
-          <div className="jd">{job["Full JD"].replace(/\*\*/g, "")}</div>
+        {skills.length > 0 && (
+          <section className="js-section">
+            <h3>Why it matches you</h3>
+            <div className="tag-cloud">{skills.map((s) => <span key={s} className="tag tag-add">✓ {s}</span>)}</div>
+          </section>
+        )}
+
+        <section className="js-section">
+          <h3>About the job</h3>
+          {jd ? (
+            <>
+              <div className={`jd ${expanded ? "" : "jd-clamped"}`}>{jd}</div>
+              {jd.length > 700 && (
+                <button className="link-btn" onClick={() => setExpanded(!expanded)}>{expanded ? "Show less" : "Read full description"}</button>
+              )}
+            </>
+          ) : <p className="muted">No description saved. Open the job post to read it.</p>}
+        </section>
+
+        {hasEmailFlow || showEmail ? (
+          <section className="js-section email-card">
+            <h3>{locked ? "Email that was sent" : "Your email to the recruiter"}</h3>
+            <label className="field"><span className="field-label">To</span>
+              <input value={form.recruiter_email || ""} onChange={set("recruiter_email")} disabled={locked} placeholder="recruiter@company.com" />
+            </label>
+            <label className="field"><span className="field-label">Subject</span>
+              <input value={form.subject || ""} onChange={set("subject")} disabled={locked} />
+            </label>
+            <label className="field"><span className="field-label">Message <span className="muted">· resume attached automatically</span></span>
+              <textarea rows={11} value={form.body || ""} onChange={set("body")} disabled={locked} />
+            </label>
+            {!locked && (
+              <div className="email-actions">
+                {busy && <p className="muted small">The agent is busy; save again when it finishes.</p>}
+                {job.Status === "Approved"
+                  ? <button className="btn" disabled={saving || busy} onClick={() => save("Drafted")}>Unapprove</button>
+                  : <button className="btn btn-primary" disabled={saving || busy || !form.recruiter_email || !form.subject}
+                      onClick={() => save("Approved", "Approved: it goes out on the next send")}>
+                      <Icon name="send" size={14} /> Approve to send
+                    </button>}
+                <button className="btn" disabled={saving || busy || !dirty} onClick={() => save()}>Save edits</button>
+              </div>
+            )}
+          </section>
         ) : (
-          <>
-            <p className="summary">{job["Profile / JD Summary"]}</p>
-            <p className="muted small top-gap">Only a summary was saved for this older job. The full description is added on the next “Find jobs now”, or read it on the job post.</p>
-          </>
+          <button className="add-contact" onClick={() => setShowEmail(true)}>
+            <Icon name="mail" size={15} /> Know the recruiter's email? Add it and the agent will write to them
+          </button>
         )}
 
-        <h3>{locked ? "Email that was sent" : "Email draft"}</h3>
-        {job.Status === "No Contact" && !form.recruiter_email && (
-          <p className="muted small">No email found in the post. Add one below to contact them, or apply through the job link.</p>
-        )}
-        <label className="field"><span className="field-label">Recruiter email</span>
-          <input value={form.recruiter_email || ""} onChange={set("recruiter_email")} disabled={locked} />
+        <label className="field js-notes"><span className="field-label">Your notes</span>
+          <input value={form.notes || ""} onChange={set("notes")} placeholder="e.g. referral from Rahul, interview on Friday"
+            disabled={locked} onBlur={() => (form.notes || "") !== (original.notes || "") && save(undefined, "Notes saved")} />
         </label>
-        <label className="field"><span className="field-label">Subject</span>
-          <input value={form.subject || ""} onChange={set("subject")} disabled={locked} />
-        </label>
-        <label className="field"><span className="field-label">Body <span className="muted">· resume attached automatically</span></span>
-          <textarea rows={12} value={form.body || ""} onChange={set("body")} disabled={locked} />
-        </label>
-        <label className="field"><span className="field-label">Notes</span>
-          <input value={form.notes || ""} onChange={set("notes")} disabled={locked} />
-        </label>
-
-        {!locked && (
-          <div className="panel-actions">
-            {busy && <p className="muted small">The agent is running; changes can be saved when it finishes.</p>}
-            <button className="btn btn-primary" disabled={saving || busy || !form.recruiter_email || !form.subject}
-              onClick={() => save("Approved")}>Approve to send</button>
-            <button className="btn" disabled={saving || busy || !dirty} onClick={() => save()}>Save edits</button>
-            {job.Status !== "Skipped"
-              ? <button className="btn" disabled={saving || busy} onClick={() => save("Skipped")}>Skip</button>
-              : <button className="btn" disabled={saving || busy} onClick={() => save("Drafted")}>Restore</button>}
-            {job.Status === "Approved" && <button className="btn" disabled={saving || busy} onClick={() => save("Drafted")}>Unapprove</button>}
-          </div>
-        )}
       </aside>
     </>
   );

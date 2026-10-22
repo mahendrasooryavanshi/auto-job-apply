@@ -19,6 +19,11 @@ const KEYS = [
     href: "https://console.anthropic.com/settings/keys", linkText: "Get a key",
   },
   {
+    key: "JOBSPIPE_API_KEY", label: "JobsPipe key (30+ job sources)",
+    hint: "LinkedIn, Indeed, company pages and more in one search, often with recruiter emails. 1 credit per job; the agent uses at most 25 per search.",
+    href: "https://jobspipe.dev", linkText: "Get a key",
+  },
+  {
     key: "SERPER_API_KEY", label: "Serper.dev key (LinkedIn hiring posts)",
     hint: "Finds recruiters' LinkedIn “we're hiring, send CV to …” posts, which usually include an email. 2,500 free searches.",
     href: "https://serper.dev/api-key", linkText: "Get a free key",
@@ -278,6 +283,20 @@ export default function Settings({ notify, onSaved }) {
           <Field label="Secondary skills" hint="Nice-to-have">
             <TagInput value={s.secondary_skills} onChange={set("search", "secondary_skills")} placeholder="e.g. AWS, Docker" />
           </Field>
+          <div className="span-2">
+            <Toggle label="Include target companies' career pages" checked={s.company_jobs ?? true} onChange={set("search", "company_jobs")}
+              hint="Reads openings straight from these companies' official careers feeds (Greenhouse, Lever, Ashby, SmartRecruiters). Direct apply links, full descriptions, last 30 days." />
+            {(s.company_jobs ?? true) && (
+              <Field label="Target companies" hint="Type a company name and press Enter; its careers feed is found automatically (Greenhouse, Lever, Ashby, SmartRecruiters, Workable, Recruitee, Personio, Breezy, Rippling). For Workday companies (Adobe, Salesforce, NVIDIA…) paste their careers link, e.g. Adobe=https://adobe.wd5.myworkdayjobs.com/external_experienced">
+                <TagInput value={s.target_companies || []} onChange={set("search", "target_companies")} placeholder="e.g. Razorpay" />
+                <div className="company-status">
+                  {Object.entries(server.company_sources || {}).map(([c, st]) => (
+                    <span key={c} className={`mini-status ${st === "not found" ? "bad" : st.startsWith("checking") ? "" : "good"}`}>{c}: {st}</span>
+                  ))}
+                </div>
+              </Field>
+            )}
+          </div>
           <div className="span-2">
             <Toggle label="Include LinkedIn job listings" checked={s.linkedin_jobs ?? true} onChange={set("search", "linkedin_jobs")}
               hint="Reads LinkedIn's public job pages (no login, so your account is never used). Full descriptions; about 20 jobs per role and location." />

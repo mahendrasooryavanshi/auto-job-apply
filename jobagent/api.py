@@ -1,8 +1,10 @@
 """HTTP API behind the React dashboard. Start with: python -m jobagent ui"""
+import base64
+import json
 import logging
 import threading
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
 
@@ -16,7 +18,7 @@ from .__main__ import cmd_find, cmd_recheck, cmd_send
 from .config import ROOT, load_config
 from .finder import has_job_source
 from .lock import Busy, agent_lock
-from . import hr, linkedin_account, profile, settings
+from . import hr, linkedin_account, linkedin_import, profile, settings
 from .activity import external_run, friendly_error, get_progress, record, recent, set_progress
 from .sheet import Tracker
 
@@ -56,7 +58,7 @@ async def local_dashboard_only(request: Request, call_next):
     return response
 
 # Statuses a person may set from the UI; Emailed/Failed/No Contact are set by the agent.
-USER_STATUSES = {"Drafted", "Approved", "Skipped"}
+USER_STATUSES = {"Drafted", "Approved", "Skipped", "Applied"}   # Applied: the user applied on the job's own site
 EDITABLE = {"subject": "Email Subject", "body": "Email Body", "notes": "Notes", "recruiter_email": "Recruiter Email"}
 
 _action = {"name": None, "started": None, "finished": None, "error": None, "result": None}
@@ -104,6 +106,80 @@ def jobs():
             for row_num, row in _tracker().rows()]
 
 
+def _encode_cursor(key: list) -> str:
+    return base64.urlsafe_b64encode(json.dumps({"after": key}).encode()).decode().rstrip("=")
+
+
+def _decode_cursor(cursor: str) -> list | None:
+    if not cursor:
+        return None
+    try:
+        key = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))["after"]
+        if not isinstance(key, list) or len(key) != 2:
+            raise ValueError
+        return key
+    except (ValueError, KeyError, TypeError):
+        raise HTTPException(400, "Invalid page cursor; reload the list")
+
+
+SEARCH_FIELDS = ("Company", "Role", "Location", "Tech Stack", "Source", "Recruiter Email", "Notes")
+SORTS = {   # every sort ends with the row id, so the order is total and a cursor can resume exactly
+    "newest": lambda n, r: [0, n],
+    "match": lambda n, r: [int(r.get("Match %") or 0), n],
+    "posted": lambda n, r: [str(r.get("Posted Date") or "")[:10], n],
+}
+
+
+def _source_kind(source: str) -> str:
+    s = str(source or "")
+    return "company" if s.endswith("careers") else "linkedin" if "linkedin" in s.lower() else "boards"
+
+
+@app.get("/api/jobs/page")
+def jobs_page(status: str = "All", q: str = "", limit: int = 25, cursor: str = "", sort: str = "newest",
+              source: str = "all", min_match: int = 0, max_age_days: int = 0, has_email: bool = False):
+    """Jobs one page at a time, filtered and sorted on the server. The cursor holds the last row's sort key,
+    so "Older" resumes right after it: no repeats or gaps when new jobs arrive (unlike page numbers)."""
+    limit = max(5, min(limit, 100))
+    key_of = SORTS.get(sort, SORTS["newest"])
+    words = q.lower().split()
+    oldest = (datetime.now().date() - timedelta(days=max_age_days)).isoformat() if max_age_days > 0 else ""
+    matches = []
+    for row_num, row in _tracker().rows():
+        if status != "All" and row["Status"] != status:
+            continue
+        if source != "all" and _source_kind(row["Source"]) != source:
+            continue
+        if min_match and int(row.get("Match %") or 0) < min_match:
+            continue
+        if oldest and str(row.get("Posted Date") or "")[:10] < oldest:
+            continue
+        if has_email and not row.get("Recruiter Email"):
+            continue
+        if words:
+            text = " ".join(str(row.get(f) or "") for f in SEARCH_FIELDS).lower()
+            if not all(w in text for w in words):
+                continue
+        matches.append((key_of(row_num, row), row_num, row))
+    matches.sort(key=lambda m: m[0], reverse=True)
+    after = _decode_cursor(cursor)
+    rest = [m for m in matches if after is None or m[0] < after]
+    page = rest[:limit]
+    return {
+        "items": [{"id": n, **{k: ("" if v is None else v) for k, v in r.items()}} for _, n, r in page],
+        "next_cursor": _encode_cursor(page[-1][0]) if len(rest) > limit else None,
+        "total": len(matches),
+        "start": len(matches) - len(rest),   # how many matching jobs come before this page
+    }
+
+
+@app.get("/api/version")
+def version():
+    """Which dashboard build is being served; open tabs compare it to offer a reload after updates."""
+    index = ROOT / "ui" / "dist" / "index.html"
+    return {"build": str(int(index.stat().st_mtime)) if index.exists() else "dev"}
+
+
 class JobUpdate(BaseModel):
     status: str | None = None
     subject: str | None = None
@@ -122,6 +198,8 @@ def _apply_update(tracker: Tracker, row_num: int, upd: JobUpdate) -> dict:
     if upd.status is not None:
         if upd.status not in USER_STATUSES:
             raise HTTPException(400, f"Status must be one of {sorted(USER_STATUSES)}")
+        if upd.status == "Applied":
+            fields["Notes"] = " · ".join(x for x in (rows[row_num].get("Notes") or "", f"Applied on site {datetime.now():%Y-%m-%d}") if x)
         if upd.status == "Approved" and not (fields.get("Recruiter Email") or rows[row_num]["Recruiter Email"]):
             raise HTTPException(400, "Add a recruiter email before approving")
         fields["Status"] = upd.status
@@ -129,7 +207,7 @@ def _apply_update(tracker: Tracker, row_num: int, upd: JobUpdate) -> dict:
     return rows[row_num]
 
 
-VERB = {"Approved": "approved", "Skipped": "skipped", "Drafted": "moved back to drafts"}
+VERB = {"Approved": "approved", "Skipped": "skipped", "Drafted": "moved back to drafts", "Applied": "applied to"}
 
 
 def _job_name(row: dict) -> str:
@@ -187,7 +265,7 @@ def _run(name: str, fn) -> None:
     except Exception as e:
         log.exception("%s failed", name)
         _action["error"] = friendly_error(e)
-        label = {"find": "Job search", "send": "Sending emails", "recheck": "Re-check"}.get(name, name)
+        label = {"find": "Job search", "send": "Sending emails", "recheck": "Re-check", "linkedin_import": "LinkedIn import"}.get(name, name)
         record("problem", f"{label} didn't finish", _action["error"])
     finally:
         set_progress("")
@@ -197,7 +275,7 @@ def _run(name: str, fn) -> None:
 
 @app.post("/api/actions/{name}")
 def start_action(name: str):
-    fn = {"find": cmd_find, "send": cmd_send, "recheck": cmd_recheck}.get(name)
+    fn = {"find": cmd_find, "send": cmd_send, "recheck": cmd_recheck, "linkedin_import": linkedin_import.run_import}.get(name)
     if not fn:
         raise HTTPException(404, "Unknown action")
     with _action_lock:
@@ -403,7 +481,43 @@ def hr_download():
 @app.get("/api/linkedin")
 def linkedin_status():
     return {**linkedin_account.status(load_config()["env"]), "posts": linkedin_account.history()[:20],
-            "kinds": list(linkedin_account.POST_KINDS)}
+            "kinds": list(linkedin_account.POST_KINDS), "saved_posts": linkedin_import.saved_posts()}
+
+
+class SavedItems(BaseModel):
+    jobs: list[str] = []
+    posts: list[dict] = []
+
+
+@app.post("/api/linkedin/saved")
+def linkedin_saved(req: SavedItems):
+    """Saved jobs/posts read by the "Send to Job Agent" bookmark on the user's own LinkedIn page."""
+    data = linkedin_import.queue_from_browser(req.jobs[:500], req.posts[:300])
+    if not (data["jobs"] or data["posts"]):
+        raise HTTPException(400, "No saved jobs or posts were found on that LinkedIn page")
+    start_action("linkedin_import")
+    return {"saved_jobs": len(data["jobs"]), "posts": len(data["posts"])}
+
+
+@app.post("/api/linkedin/import")
+async def linkedin_import_upload(request: Request, filename: str):
+    content = await request.body()
+    if not content:
+        raise HTTPException(400, "The file is empty")
+    if len(content) > 200 * 1024 * 1024:
+        raise HTTPException(400, "That file is too large (max 200 MB)")
+    try:
+        found = linkedin_import.parse_export(filename, content)
+    except Exception as e:
+        raise HTTPException(400, f"Couldn't read that file. Upload the .zip LinkedIn emailed you, or a CSV from it. ({e})")
+    if not (found["jobs"] or found["posts"]):
+        raise HTTPException(400, "No LinkedIn job or post links found in that file. Use the export that includes "
+                                 "“Jobs” (Saved jobs / Job applications).")
+    linkedin_import.EXPORT_PATH.write_bytes(content)
+    linkedin_import.META_PATH.write_text(filename)
+    start_action("linkedin_import")
+    saved = sum(1 for j in found["jobs"].values() if j["kind"] != "applied")
+    return {"saved_jobs": saved, "applied_jobs": len(found["jobs"]) - saved, "posts": len(found["posts"]), "files": found["files"]}
 
 
 @app.get("/api/linkedin/connect")

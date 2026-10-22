@@ -16,7 +16,7 @@ COLUMNS = [
 MAX_CELL = 32000  # Excel's limit per cell is 32,767 characters
 # Status values: Drafted -> Approved -> Emailed -> Replied | No Contact | Skipped | Failed
 # Statuses meaning we are already in touch with (or about to email) that recruiter
-CONTACTING = {"Drafted", "Approved", "Emailed", "Replied"}
+CONTACTING = {"Drafted", "Approved", "Emailed", "Replied", "Applied"}
 
 
 def same_job_key(job: dict) -> tuple[str, str]:

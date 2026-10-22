@@ -11,7 +11,11 @@ async function request(path, options = {}) {
 
 export const api = {
   summary: () => request("/summary"),
+  version: () => request("/version"),
   jobs: () => request("/jobs"),
+  jobsPage: ({ status = "All", q = "", limit = 25, cursor = "", sort = "newest", source = "all", minMatch = 0, maxAge = 0, hasEmail = false }) =>
+    request(`/jobs/page?${new URLSearchParams({ status, q, limit: String(limit), cursor, sort, source,
+      min_match: String(minMatch), max_age_days: String(maxAge), has_email: String(hasEmail) })}`),
   activity: () => request("/activity"),
   updateJob: (id, fields) => request(`/jobs/${id}`, { method: "PATCH", body: JSON.stringify(fields) }),
   bulkStatus: (ids, status) => request("/jobs/bulk-status", { method: "POST", body: JSON.stringify({ ids, status }) }),
@@ -39,6 +43,10 @@ export const api = {
   linkedin: () => request("/linkedin"),
   linkedinDraft: (kind, topic) => request("/linkedin/draft", { method: "POST", body: JSON.stringify({ kind, topic }) }),
   linkedinPost: (text) => request("/linkedin/post", { method: "POST", body: JSON.stringify({ text }) }),
+  linkedinSaved: (jobs, posts) => request("/linkedin/saved", { method: "POST", body: JSON.stringify({ jobs, posts }) }),
+  linkedinImport: (file) => request(`/linkedin/import?filename=${encodeURIComponent(file.name)}`, {
+    method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file,
+  }),
   linkedinDisconnect: () => request("/linkedin/disconnect", { method: "POST" }),
   testGmail: () => request("/settings/test-gmail", { method: "POST" }),
   uploadResume: (file) =>

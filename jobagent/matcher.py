@@ -36,6 +36,14 @@ def score(job: dict, search: dict) -> tuple[int, list[str]]:
 
 YEARS_RE = re.compile(r"(\d{1,2})\s*(?:\+|(?:-|–|to)\s*\d{1,2})?\s*\+?\s*(?:years?|yrs?)", re.I)
 SENIOR_TITLE_RE = re.compile(r"\b(principal|architect|head|director|vp|manager|staff)\b", re.I)
+# Titles that mention a stack but aren't developer jobs (recruiters hiring Node devs, test/support/security roles)
+NON_DEV_TITLE_RE = re.compile(r"\b(recruit\w*|talent|sourcer|sales|marketing|account (executive|manager)|customer|support|"
+                              r"tse|qa|quality|in test|tester|sdet|security|data scientist|analyst|designer|"
+                              r"product manager|program manager|project manager|scrum|devops|sre|site reliability|"
+                              r"hr|human resources|finance|legal|consultant|writer|documentation|"
+                              r"administrator|dba|evangelist|advocate)\b", re.I)
+# A frontend skill in the title doesn't make "Senior .NET Full Stack Developer (React)" a Node job
+FRONTEND_ONLY = {"reactjs", "react", "nextjs", "redux", "angular", "vue", "javascript", "typescript", "html", "css"}
 JUNIOR_TITLE_RE = re.compile(r"\b(intern|internship|trainee|fresher|apprentice)\b", re.I)
 
 
@@ -54,11 +62,15 @@ def reject_reason(job: dict, search: dict, experience: int = 0) -> str | None:
         return f"mentions “{hit}” (your skip list)"
     if (job.get("Company") or "").lower() in (c.lower() for c in search.get("exclude_companies") or []):
         return "company is on your skip list"
+    non_dev = NON_DEV_TITLE_RE.search(title)
+    if non_dev:
+        return f"not a developer role ({non_dev.group(1)})"
     required = search.get("required_skills") or []
     if required and not any(_has(text, s) for s in required):
         return f"doesn't mention {' / '.join(required)}"
     other = [k for k in search.get("exclude_title_keywords") or [] if _has(title, k)]
-    if other and not any(_has(title, s) for s in required + search["primary_skills"]):
+    backend = [s for s in required + search["primary_skills"] if s.lower() not in FRONTEND_ONLY]
+    if other and not any(_has(title, s) for s in backend):
         return f"title is a {other[0]} role"
     if experience:
         if experience >= 2 and JUNIOR_TITLE_RE.search(title):

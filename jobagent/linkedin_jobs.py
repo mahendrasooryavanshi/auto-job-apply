@@ -49,8 +49,8 @@ def _cards(html: str) -> list[dict]:
     return out
 
 
-def _details(job_id: str) -> tuple[str, str]:
-    """(description, notes) for one job. Raises requests.HTTPError on refusal."""
+def job_page(job_id: str) -> dict:
+    """Title, company, location, description and notes from one public job page. Raises requests.HTTPError on refusal."""
     resp = _get(DETAIL_URL.format(job_id))
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "html.parser")
@@ -61,7 +61,10 @@ def _details(job_id: str) -> tuple[str, str]:
     notes = " · ".join(x for x in (
         criteria.get("Seniority level"), criteria.get("Employment type"),
         applicants.get_text(strip=True) if applicants else "") if x)
-    return (desc.get_text("\n", strip=True) if desc else ""), notes
+    text = lambda sel: (soup.select_one(sel).get_text(strip=True) if soup.select_one(sel) else "")
+    return {"description": desc.get_text("\n", strip=True) if desc else "", "notes": notes,
+            "title": text(".topcard__title"), "company": text("a.topcard__org-name-link") or text(".topcard__org-name"),
+            "location": text(".topcard__flavor--bullet")}
 
 
 def search_linkedin_jobs(cfg: dict, known_links: set[str]) -> list[dict]:
@@ -102,7 +105,8 @@ def _build(cards: list[dict], known_links: set[str]) -> list[dict]:
         if c["link"] not in known_links and fetched < MAX_DETAILS and not blocked:
             try:
                 time.sleep(DELAY)
-                desc, notes = _details(c["id"])
+                page = job_page(c["id"])
+                desc, notes = page["description"], page["notes"]
                 fetched += 1
             except requests.RequestException as e:
                 blocked = isinstance(e, requests.HTTPError) and e.response is not None and e.response.status_code == 429

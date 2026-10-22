@@ -5,6 +5,7 @@ import re
 import requests
 
 log = logging.getLogger(__name__)
+JSEARCH_MAX_CALLS = 4
 
 
 def _problem(source: str, role: str, location: str, e: Exception) -> None:
@@ -14,7 +15,11 @@ def _problem(source: str, role: str, location: str, e: Exception) -> None:
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 # Indian mobile numbers as published in the post, e.g. +91 98765 43210 / 9876543210
 PHONE_RE = re.compile(r"(?:\+?91[\s-]?)?[6-9]\d{4}[\s-]?\d{5}\b")
-IGNORED_EMAIL_PARTS = ("noreply", "no-reply", "example.com", "privacy", "unsubscribe")
+# Addresses that appear in job ads' legal text but don't reach a recruiter (accommodation requests, fraud
+# reports, privacy/legal desks): emailing them looks careless, so they're never used as a recruiter contact
+IGNORED_EMAIL_PARTS = ("noreply", "no-reply", "donotreply", "example.com", "privacy", "unsubscribe", "accommodation",
+                       "fraud", "legal", "compliance", "accessibility", "disability", "gdpr", "dataprotection",
+                       "security@", "abuse@", "support@", "billing@", "press@", "media@", "investor")
 
 
 def extract_contacts(text: str) -> tuple[str, str]:
@@ -87,12 +92,16 @@ def search_adzuna(app_id: str, app_key: str, role: str, location: str, days: int
 
 
 def has_job_source(env: dict, search: dict | None = None) -> bool:
+    search = search or {}
     return bool(env["RAPIDAPI_KEY"] or (env["ADZUNA_APP_ID"] and env["ADZUNA_APP_KEY"])
-                or env["SERPER_API_KEY"] or env["SERPAPI_KEY"] or (search or {}).get("linkedin_jobs", True))
+                or env["SERPER_API_KEY"] or env["SERPAPI_KEY"] or env["JOBSPIPE_API_KEY"] or search.get("linkedin_jobs", True)
+                or (search.get("company_jobs", True) and search.get("target_companies", True)))
 
 
 def find_jobs(cfg: dict, known_links: set[str] = frozenset()) -> list[dict]:
     # imported here: these modules use _row from this module
+    from .company_jobs import search_companies
+    from .jobspipe import search_jobspipe
     from .linkedin_jobs import search_linkedin_jobs
     from .linkedin_posts import search_posts
 
@@ -100,13 +109,23 @@ def find_jobs(cfg: dict, known_links: set[str] = frozenset()) -> list[dict]:
     if not has_job_source(env, s):
         raise RuntimeError("No job source is on. Turn on LinkedIn jobs or add a JSearch / Adzuna / Serper key in Settings.")
     jobs = []
+    if env["JOBSPIPE_API_KEY"]:
+        jobs += search_jobspipe(cfg)
+    if s.get("company_jobs", True):
+        try:
+            jobs += search_companies(cfg)
+        except Exception as e:   # one source failing must not stop the others
+            log.warning("Target companies search failed: %s", e)
     if s.get("linkedin_jobs", True):
         jobs += search_linkedin_jobs(cfg, set(known_links))
     if env["SERPER_API_KEY"] or env["SERPAPI_KEY"]:
         jobs += search_posts(cfg)
+    jsearch_calls = 0
     for role in s["roles"]:
         for location in s["locations"]:
-            if env["RAPIDAPI_KEY"]:
+            # JSearch's free plan allows only a few hundred calls a month: spend at most JSEARCH_MAX_CALLS per run
+            if env["RAPIDAPI_KEY"] and jsearch_calls < JSEARCH_MAX_CALLS:
+                jsearch_calls += 1
                 try:
                     jobs += search_jsearch(env["RAPIDAPI_KEY"], role, location, s["posted_within_days"])
                 except requests.RequestException as e:

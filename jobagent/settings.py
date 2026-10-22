@@ -6,23 +6,24 @@ from pathlib import Path
 
 import yaml
 
+from .company_jobs import DEFAULT_COMPANIES, company_status
 from .config import CONFIG_PATH, ENV_KEYS, ENV_PATH, ROOT, read_env, read_raw_config
 
 SECRET_KEYS = {"GMAIL_APP_PASSWORD", "ANTHROPIC_API_KEY", "RAPIDAPI_KEY", "ADZUNA_APP_KEY",
                "SERPER_API_KEY", "SERPAPI_KEY", "GEMINI_API_KEY",
-               "LINKEDIN_CLIENT_SECRET"}
+               "LINKEDIN_CLIENT_SECRET", "JOBSPIPE_API_KEY"}
 RESUME_TYPES = {".pdf", ".doc", ".docx"}
 MAX_RESUME_BYTES = 5 * 1024 * 1024
 
 CANDIDATE_FIELDS = {"name", "phone", "linkedin", "naukri", "experience_years",
                     "current_ctc", "expected_ctc", "notice_period"}
-SEARCH_LISTS = {"roles", "locations", "primary_skills", "secondary_skills", "required_skills",
+SEARCH_LISTS = {"roles", "locations", "primary_skills", "secondary_skills", "required_skills", "target_companies",
                 "exclude_keywords", "exclude_title_keywords", "exclude_companies"}
 # field: (min, max)
 SEARCH_NUMBERS = {"posted_within_days": (1, 30), "min_match_percent": (0, 100)}
 EMAIL_NUMBERS = {"daily_limit": (1, 500), "delay_seconds": (5, 600), "follow_up_days": (0, 30)}
 EMAIL_BOOLS = {"auto_send", "use_claude"}
-SEARCH_BOOLS = {"linkedin_jobs"}
+SEARCH_BOOLS = {"linkedin_jobs", "company_jobs"}
 
 
 class SettingsError(ValueError):
@@ -43,7 +44,8 @@ def get_settings() -> dict:
     resume = ROOT / cfg["candidate"]["resume_path"]
     return {
         "candidate": {k: cfg["candidate"].get(k, "") for k in CANDIDATE_FIELDS},
-        "search": cfg["search"],
+        "search": {"target_companies": DEFAULT_COMPANIES, "company_jobs": True, **cfg["search"]},
+        "company_sources": company_status(cfg["search"].get("target_companies", DEFAULT_COMPANIES)),
         "email": cfg["email"],
         "gmail_address": env["GMAIL_ADDRESS"],
         "adzuna_app_id": env["ADZUNA_APP_ID"],

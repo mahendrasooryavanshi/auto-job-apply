@@ -108,7 +108,13 @@ function HrSheetGrid({ rows, file, notify, onChanged, onPreview }) {
   const locked = Boolean(file?.open);
   const [selected, setSelected] = useState(new Set());
   const [draft, setDraft] = useState(EMPTY);
-  const ordered = rows;   // same order as the Excel file
+  const [hrQuery, setHrQuery] = useState("");
+  const [hrStatus, setHrStatus] = useState("All");
+  const words = hrQuery.toLowerCase().split(/\s+/).filter(Boolean);
+  // same order as the Excel file, narrowed by the search box and status filter
+  const ordered = rows.filter((r) => (hrStatus === "All" || r.Status === hrStatus) &&
+    words.every((w) => `${r["HR Name"]} ${r["HR Email"]} ${r.Company} ${r.Role} ${r.Notes}`.toLowerCase().includes(w)));
+  const statusCounts = rows.reduce((acc, r) => ({ ...acc, [r.Status]: (acc[r.Status] || 0) + 1 }), {});
 
   const save = (id, field) => async (value) => {
     try {
@@ -177,6 +183,16 @@ function HrSheetGrid({ rows, file, notify, onChanged, onPreview }) {
           )}
           <button className="btn btn-sm btn-primary" onClick={openFile}><Icon name="file" size={14} /> Open in LibreOffice</button>
           <a className="btn btn-sm" href="/api/hr/download">Download</a>
+        </div>
+      </div>
+      <div className="filter-bar">
+        <input className="search" placeholder="Search name, email, company or role…" value={hrQuery} onChange={(e) => setHrQuery(e.target.value)} />
+        <div className="chips">
+          {["All", "Ready", "Emailed", "Replied", "Paused", "Failed", "Check email"].map((st) => (
+            <button key={st} className={`chip ${hrStatus === st ? "active" : ""}`} onClick={() => setHrStatus(st)}>
+              {st}<span>{st === "All" ? rows.length : statusCounts[st] || 0}</span>
+            </button>
+          ))}
         </div>
       </div>
       <div className={`file-bar ${locked ? "file-open" : ""}`}>
