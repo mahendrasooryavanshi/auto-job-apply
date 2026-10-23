@@ -128,22 +128,6 @@ def jobs():
             for row_num, row in _tracker().rows()]
 
 
-def _encode_cursor(key: list) -> str:
-    return base64.urlsafe_b64encode(json.dumps({"after": key}).encode()).decode().rstrip("=")
-
-
-def _decode_cursor(cursor: str) -> list | None:
-    if not cursor:
-        return None
-    try:
-        key = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))["after"]
-        if not isinstance(key, list) or len(key) != 2:
-            raise ValueError
-        return key
-    except (ValueError, KeyError, TypeError):
-        raise HTTPException(400, "Invalid page cursor; reload the list")
-
-
 SEARCH_FIELDS = ("Company", "Role", "Location", "Tech Stack", "Source", "Recruiter Email", "Notes")
 def _pct(value) -> float:
     """Match % as a number; tolerates "85%", "85.5" and hand-typed junk."""
@@ -151,7 +135,7 @@ def _pct(value) -> float:
     return float(m.group()) if m else 0.0
 
 
-SORTS = {   # every sort ends with the row id, so the order is total and a cursor can resume exactly
+SORTS = {   # every sort ends with the row id, so the order is total and a page always holds the same jobs
     "newest": lambda n, r: [0, n],
     "match": lambda n, r: [_pct(r.get("Match %")), n],
     "posted": lambda n, r: [str(r.get("Posted Date") or "")[:10], n],
@@ -164,10 +148,10 @@ def _source_kind(source: str) -> str:
 
 
 @app.get("/api/jobs/page")
-def jobs_page(status: str = "All", q: str = "", limit: int = 25, cursor: str = "", sort: str = "newest",
+def jobs_page(status: str = "All", q: str = "", limit: int = 25, page: int = 1, sort: str = "newest",
               source: str = "all", min_match: int = 0, max_age_days: int = 0, has_email: bool = False):
-    """Jobs one page at a time, filtered and sorted on the server. The cursor holds the last row's sort key,
-    so "Older" resumes right after it: no repeats or gaps when new jobs arrive (unlike page numbers)."""
+    """Jobs one numbered page at a time, filtered and sorted on the server. A page past the end (jobs were skipped
+    or filtered away since it was opened) returns the last page instead, with its real number."""
     limit = max(5, min(limit, 100))
     key_of = SORTS.get(sort, SORTS["newest"])
     words = q.lower().split()
@@ -190,17 +174,15 @@ def jobs_page(status: str = "All", q: str = "", limit: int = 25, cursor: str = "
                 continue
         matches.append((key_of(row_num, row), row_num, row))
     matches.sort(key=lambda m: m[0], reverse=True)
-    after = _decode_cursor(cursor)
-    try:
-        rest = [m for m in matches if after is None or m[0] < after]
-    except TypeError:   # cursor made for another sort order
-        raise HTTPException(400, "Invalid page cursor; reload the list")
-    page = rest[:limit]
+    pages = max(1, -(-len(matches) // limit))
+    page = max(1, min(page, pages))
+    start = (page - 1) * limit
     return {
-        "items": [{"id": n, **{k: ("" if v is None else v) for k, v in r.items()}} for _, n, r in page],
-        "next_cursor": _encode_cursor(page[-1][0]) if len(rest) > limit else None,
+        "items": [{"id": n, **{k: ("" if v is None else v) for k, v in r.items()}} for _, n, r in matches[start:start + limit]],
         "total": len(matches),
-        "start": len(matches) - len(rest),   # how many matching jobs come before this page
+        "start": start,   # how many matching jobs come before this page
+        "page": page,
+        "pages": pages,
     }
 
 

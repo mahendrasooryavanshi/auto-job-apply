@@ -33,6 +33,16 @@ function loadFilters() {
   try { return { ...DEFAULT_FILTERS, ...JSON.parse(localStorage.getItem("jobs.filters")) }; } catch { return DEFAULT_FILTERS; }
 }
 
+// Page numbers to show: always the first and last, two either side of the current one, null for a gap ("…")
+function pageList(current, total) {
+  const out = [];
+  for (let n = 1; n <= total; n++) {
+    if (n === 1 || n === total || Math.abs(n - current) <= 2) out.push(n);
+    else if (out[out.length - 1] !== null) out.push(null);
+  }
+  return out;
+}
+
 function loadPageSize() {
   try { return Number(localStorage.getItem("jobs.pageSize")) || 25; } catch { return 25; }
 }
@@ -42,19 +52,17 @@ export default function Jobs({ jobs, counts, filter, setFilter, openId, onOpen, 
   const [search, setSearch] = useState("");          // query after typing pauses
   const [limit, setLimit] = useState(loadPageSize);
   const [filters, setFiltersState] = useState(loadFilters);
-  // Cursor-based paging: cursors[i] is where page i starts ("" = newest). Going back pops the stack.
-  // The stack belongs to one set of filters: a new filter, search or page size starts again from the newest jobs
-  // in the same render, so no request goes out with the old cursor.
+  // The page number belongs to one set of filters: a new filter, search or page size starts again from page 1
+  // in the same render, so no request goes out with the old page number.
   const pagingKey = JSON.stringify([filter, search, limit, filters]);
-  const [paging, setPaging] = useState({ key: pagingKey, cursors: [""] });
-  const cursors = paging.key === pagingKey ? paging.cursors : [""];
-  const setCursors = (next) => setPaging({ key: pagingKey, cursors: next });
+  const [paging, setPaging] = useState({ key: pagingKey, number: 1 });
+  const pageNumber = paging.key === pagingKey ? paging.number : 1;
+  const goTo = (number) => setPaging({ key: pagingKey, number });
   const requestRef = useRef(0);
   const [page, setPage] = useState(null);
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState(new Set());
   const [panel, setPanel] = useState(null);   // open dropdown: "filters" | "sort" | null
-  const cursor = cursors[cursors.length - 1];
   const setFilters = (f) => {
     setFiltersState(f);
     try { localStorage.setItem("jobs.filters", JSON.stringify(f)); } catch { /* not saved */ }
@@ -72,19 +80,18 @@ export default function Jobs({ jobs, counts, filter, setFilter, openId, onOpen, 
     const id = ++requestRef.current;   // only the newest request may update the page
     if (!quiet) setLoading(true);
     try {
-      const res = await api.jobsPage({ status: filter, q: search, limit, cursor, ...filters });
+      const res = await api.jobsPage({ status: filter, q: search, limit, page: pageNumber, ...filters });
       if (id === requestRef.current) setPage(res);
     } catch (e) {
       if (id !== requestRef.current) return;
       if (!quiet) notify(e.message, "error");
-      if (e.message.includes("cursor")) setPaging({ key: pagingKey, cursors: [""] });
     } finally {
       if (id === requestRef.current) setLoading(false);
     }
-  }, [filter, search, limit, cursor, filters, pagingKey, notify]);
+  }, [filter, search, limit, pageNumber, filters, notify]);
 
   useEffect(() => { load(false); }, [load]);
-  // Keep the current page fresh (statuses change while emails send); the cursor keeps it in place
+  // Keep the current page fresh (statuses change while emails send); the page number keeps it in place
   useEffect(() => { load(true); }, [jobs.length, counts]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const items = page?.items || [];
@@ -259,19 +266,28 @@ export default function Jobs({ jobs, counts, filter, setFilter, openId, onOpen, 
 
         {page && page.total > 0 && (
           <div className="pager">
-            <span className="muted">Showing <strong>{from}–{to}</strong> of <strong>{page.total}</strong></span>
+            <span className="muted"><span className="pager-label">Showing </span><strong>{from}–{to}</strong> of <strong>{page.total}</strong></span>
             <label className="pager-size">
               Per page
               <select value={limit} onChange={changePageSize}>
                 {PAGE_SIZES.map((n) => <option key={n} value={n}>{n}</option>)}
               </select>
             </label>
-            <div className="pager-buttons">
-              <button className="btn btn-sm" disabled={cursors.length === 1 || loading}
-                onClick={() => setCursors(cursors.slice(0, -1))}>← Newer</button>
-              <button className="btn btn-sm" disabled={!page.next_cursor || loading}
-                onClick={() => setCursors([...cursors, page.next_cursor])}>Older →</button>
-            </div>
+            <nav className="pager-buttons" aria-label="Pages">
+              <button className="btn btn-sm pager-end" disabled={page.page === 1 || loading} aria-label="First page"
+                onClick={() => goTo(1)}>«</button>
+              <button className="btn btn-sm" disabled={page.page === 1 || loading} aria-label="Previous page"
+                onClick={() => goTo(page.page - 1)}>‹</button>
+              {pageList(page.page, page.pages).map((n, i) => n === null
+                ? <span key={`gap${i}`} className="pager-gap">…</span>
+                : <button key={n} className={`btn btn-sm pager-num${n === page.page ? " active" : ""}`}
+                    aria-current={n === page.page ? "page" : undefined} disabled={loading}
+                    onClick={() => goTo(n)}>{n}</button>)}
+              <button className="btn btn-sm" disabled={page.page === page.pages || loading} aria-label="Next page"
+                onClick={() => goTo(page.page + 1)}>›</button>
+              <button className="btn btn-sm pager-end" disabled={page.page === page.pages || loading} aria-label="Last page"
+                onClick={() => goTo(page.pages)}>»</button>
+            </nav>
           </div>
         )}
       </section>

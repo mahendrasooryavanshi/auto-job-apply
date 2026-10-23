@@ -13,8 +13,8 @@ export const api = {
   summary: () => request("/summary"),
   version: () => request("/version"),
   jobs: () => request("/jobs"),
-  jobsPage: ({ status = "All", q = "", limit = 25, cursor = "", sort = "newest", source = "all", minMatch = 0, maxAge = 0, hasEmail = false }) =>
-    request(`/jobs/page?${new URLSearchParams({ status, q, limit: String(limit), cursor, sort, source,
+  jobsPage: ({ status = "All", q = "", limit = 25, page = 1, sort = "newest", source = "all", minMatch = 0, maxAge = 0, hasEmail = false }) =>
+    request(`/jobs/page?${new URLSearchParams({ status, q, limit: String(limit), page: String(page), sort, source,
       min_match: String(minMatch), max_age_days: String(maxAge), has_email: String(hasEmail) })}`),
   activity: () => request("/activity"),
   updateJob: (id, fields) => request(`/jobs/${id}`, { method: "PATCH", body: JSON.stringify(fields) }),
