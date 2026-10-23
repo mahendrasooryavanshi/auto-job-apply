@@ -365,7 +365,8 @@ def send_hr(cfg: dict, remaining: int, already_emailed: set[str]) -> tuple[int, 
     sent = followed = 0
     total = min(len(queue), remaining)
     set_progress(f"Connecting to Gmail to email {total} HR contact{'s' if total != 1 else ''}…")
-    with Mailer(env["GMAIL_ADDRESS"], env["GMAIL_APP_PASSWORD"], cfg["candidate"]["resume_path"]) as mailer:
+    with Mailer(env["GMAIL_ADDRESS"], env["GMAIL_APP_PASSWORD"], cfg["candidate"]["resume_path"],
+                cfg["candidate"]["name"]) as mailer:
         for i, (kind, email) in enumerate(queue):
             if remaining <= 0:
                 break

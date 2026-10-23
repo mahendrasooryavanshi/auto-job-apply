@@ -15,10 +15,15 @@ class _SMTP(smtplib.SMTP_SSL):
         return super().data(msg)
 
 
+PLACEHOLDER_NAME = "Your Name"   # config.example.yaml's default: never let it reach a recruiter
+
+
 class Mailer:
-    def __init__(self, address: str, app_password: str, resume_path: str):
+    def __init__(self, address: str, app_password: str, resume_path: str, sender_name: str = ""):
         if not address or not app_password:
             raise RuntimeError("Set GMAIL_ADDRESS and GMAIL_APP_PASSWORD in .env")
+        if not sender_name.strip() or sender_name.strip() == PLACEHOLDER_NAME:
+            raise RuntimeError("Your name isn't set: add it in Settings → Your profile before sending")
         self.address, self.password = address, app_password.replace(" ", "")
         self.resume = Path(resume_path)
         if not self.resume.exists():
@@ -57,6 +62,8 @@ class Mailer:
 
     def send(self, to: str, subject: str, body: str, reply_to_id: str = "") -> str:
         """Send with the resume attached; returns the Message-ID. reply_to_id threads a follow-up."""
+        if PLACEHOLDER_NAME in subject or PLACEHOLDER_NAME in body:
+            raise RuntimeError(f'The email still says "{PLACEHOLDER_NAME}": edit it, or re-draft it after setting your name')
         msg = EmailMessage()
         msg["From"], msg["To"], msg["Subject"] = self.address, to, subject
         msg["Message-ID"] = make_msgid(domain=self.address.split("@")[-1])

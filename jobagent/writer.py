@@ -1,5 +1,6 @@
 """Draft a short, personalised outreach email for a job."""
 import logging
+import re
 
 import anthropic
 
@@ -15,6 +16,15 @@ Output format exactly:
 SUBJECT: <subject line>
 
 <email body without signature>"""
+
+
+# A closing line the model adds despite the prompt ("Best regards,\n\nName"); everything from it on is dropped
+SIGN_OFF = re.compile(r"\n\s*(best regards|kind regards|warm regards|regards|best|sincerely|thanks|thank you|cheers)[ \t]*,?"
+                      r"(\s*\n[^\n]{0,80}){0,4}\s*$", re.IGNORECASE)
+
+
+def _strip_sign_off(body: str) -> str:
+    return SIGN_OFF.sub("", body).rstrip()
 
 
 def _signature(c: dict) -> str:
@@ -110,4 +120,4 @@ class EmailWriter:
         if not text.startswith("SUBJECT:"):
             return template_email(job, self.cand, skills)
         subject, _, body = text.partition("\n")
-        return subject.removeprefix("SUBJECT:").strip(), f"{body.strip()}\n\n{_signature(c)}"
+        return subject.removeprefix("SUBJECT:").strip(), f"{_strip_sign_off(body.strip())}\n\n{_signature(c)}"

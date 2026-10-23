@@ -191,7 +191,8 @@ def _send_jobs(cfg: dict, remaining: int, emailed: set[str], follow_ups: bool = 
     if remaining <= 0 or not queue:
         return sent, followed, skipped, remaining
     total = min(len(queue), remaining)
-    with Mailer(env["GMAIL_ADDRESS"], env["GMAIL_APP_PASSWORD"], cfg["candidate"]["resume_path"]) as mailer:
+    with Mailer(env["GMAIL_ADDRESS"], env["GMAIL_APP_PASSWORD"], cfg["candidate"]["resume_path"],
+                cfg["candidate"]["name"]) as mailer:
         for i, (kind, link) in enumerate(queue):
             if remaining <= 0:
                 break

@@ -11,9 +11,11 @@ log = logging.getLogger(__name__)
 BASE = "https://generativelanguage.googleapis.com/v1beta"
 DEFAULT_MODEL = "gemini-flash-latest"     # Google's alias for the current flash model
 BUSY_FALLBACK = "gemini-flash-lite-latest"  # lighter model to try when the main one is overloaded
-RETRY_WAITS = (3, 8, 15)
+RETRY_WAITS = (3, 8)
+BUSY_SECONDS = 600   # after the main model says it's overloaded, use the lighter one for this long
 _model_cache: dict[str, str] = {}
 _daily_used_up: dict[str, str] = {}   # key -> date the main model's free daily quota ran out
+_busy_until: dict[str, float] = {}    # key -> time until which the main model is treated as overloaded
 
 
 def _quota(resp: requests.Response) -> tuple[bool, float]:
@@ -60,7 +62,8 @@ def generate_contents(key: str, system: str, contents: list[dict], schema: dict 
     Handles retired models, models without thinking levels, overload retries and readable errors."""
     today = time.strftime("%Y-%m-%d")
     # Each model has its own free daily quota: once the main one is used up, use the lighter model until tomorrow
-    model = BUSY_FALLBACK if _daily_used_up.get(key) == today else _model_cache.get(key, DEFAULT_MODEL)
+    busy = _daily_used_up.get(key) == today or _busy_until.get(key, 0) > time.time()
+    model = BUSY_FALLBACK if busy else _model_cache.get(key, DEFAULT_MODEL)
     config = {"maxOutputTokens": max_tokens, "thinkingConfig": {"thinkingLevel": thinking}}
     if schema:
         config.update(responseMimeType="application/json", responseSchema=schema)
@@ -75,11 +78,17 @@ def generate_contents(key: str, system: str, contents: list[dict], schema: dict 
     if resp.status_code == 400 and "thinking" in resp.text.lower():
         config.pop("thinkingConfig")                 # older models don't take thinking levels
         resp = _post(key, model, body)
-    for wait in RETRY_WAITS:                         # overloaded: wait and retry, then try the lighter model
+    if resp.status_code in (500, 503) and model != BUSY_FALLBACK:
+        # Overloaded: switch to the lighter model straight away (each busy reply takes ~10s) and stay on it a while
+        _busy_until[key] = time.time() + BUSY_SECONDS
+        log.info("Gemini %s is overloaded; using %s for %d minutes", model, BUSY_FALLBACK, BUSY_SECONDS // 60)
+        model = BUSY_FALLBACK
+        resp = _post(key, model, body)
+    for wait in RETRY_WAITS:                         # the lighter model is busy too: wait and retry
         if resp.status_code not in (500, 503):
             break
         time.sleep(wait)
-        resp = _post(key, model if wait != RETRY_WAITS[-1] else BUSY_FALLBACK, body)
+        resp = _post(key, model, body)
     if resp.status_code == 429:
         daily, wait = _quota(resp)
         if daily and model != BUSY_FALLBACK:
