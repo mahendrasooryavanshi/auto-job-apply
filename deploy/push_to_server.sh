@@ -6,8 +6,8 @@
 #   Later code updates (never touches the server's data, keys or settings):
 #     bash deploy/push_to_server.sh ~/Downloads/job-agent.pem ubuntu@<server-ip>
 set -euo pipefail
-KEY="${1:?usage: push_to_server.sh <key.pem> <user@host> [--with-data]}"
-HOST="${2:?usage: push_to_server.sh <key.pem> <user@host> [--with-data]}"
+KEY="${1:?usage: push_to_server.sh /home/ubuntu/Desktop/auto-apply-JobAgent.pem 34.229.148.30 [--with-data]}"
+HOST="${2:?usage: push_to_server.sh /home/ubuntu/Desktop/auto-apply-JobAgent.pem 34.229.148.30 [--with-data]}"
 WITH_DATA="${3:-}"
 cd "$(dirname "$0")/.."
 chmod 400 "$KEY"

@@ -1,8 +1,9 @@
 """Excel tracker: one row per job, deduplicated by job link."""
+import json
 import os
 import re
 import subprocess
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
@@ -125,3 +126,15 @@ class Tracker:
         tmp = self.path.with_suffix(".tmp.xlsx")
         self.wb.save(tmp)
         os.replace(tmp, self.path)
+        self.save_json()
+
+    def save_json(self) -> Path:
+        """Mirror every job into one JSON file next to the sheet (data/jobs.json)."""
+        path = self.path.with_name("jobs.json")
+        jobs = [{c: ("" if v is None else v) for c, v in r.items()} for _, r in self.rows()]
+        tmp = path.with_suffix(".tmp.json")
+        tmp.write_text(json.dumps({"updated_at": datetime.now().isoformat(timespec="seconds"),
+                                   "count": len(jobs), "jobs": jobs},
+                                  indent=2, ensure_ascii=False, default=str))
+        os.replace(tmp, path)
+        return path
